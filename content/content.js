@@ -172,7 +172,7 @@ async function processPrompt(prompt, index, config) {
             if (upscaleComplete) {
                 console.log('[Flow Automator] Image upscale complete!');
                 await clickDismissButton();
-                await sleep(2000);
+                await sleep(3000); // Wait longer for upscaled image download to start
             } else {
                 console.log('[Flow Automator] Image upscale timeout');
             }

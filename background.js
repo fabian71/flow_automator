@@ -57,7 +57,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // Register a URL -> filename mapping before download starts
 function registerPendingDownload(url, type) {
-    if (!automationState.isProcessing) return;
+    if (!automationState.isProcessing || !automationState.config) return;
 
     const cfg = automationState.config;
     const idx = automationState.currentIndex;
@@ -130,6 +130,12 @@ async function processNextPrompt() {
     const prompt = automationState.prompts[automationState.currentIndex];
     const config = automationState.config;
 
+    if (!config) {
+        console.error('[BG] Config is null, stopping automation');
+        stopAutomation();
+        return;
+    }
+
     // Store current prompt info for download renaming
     await chrome.storage.local.set({
         currentIndex: automationState.currentIndex,
@@ -187,10 +193,10 @@ async function handlePromptComplete(msg) {
         // Wait for the video/image download to be fully processed
         // This ensures the download listener has time to rename the file
         console.log('[BG] Waiting for download to complete...');
-        await sleep(2000);
+        await sleep(3000); // Increased for larger 2K/4K image downloads
 
         // Save prompt as txt file if enabled
-        if (automationState.config.savePromptTxt) {
+        if (automationState.config?.savePromptTxt) {
             await savePromptTxt(msg.prompt);
         }
     } else {
@@ -198,7 +204,7 @@ async function handlePromptComplete(msg) {
     }
 
     // Wait delay before next prompt
-    const delayMs = (automationState.config.delaySeconds || 5) * 1000;
+    const delayMs = (automationState.config?.delaySeconds || 5) * 1000;
     console.log('[BG] Waiting', delayMs, 'ms before next prompt...');
 
     broadcastMessage({ type: 'progress', current: automationState.currentIndex, total: automationState.prompts.length, status: 'Aguardando...' });
@@ -227,6 +233,7 @@ async function savePromptTxt(prompt) {
     } else {
         // Fallback: generate name from prompt
         const cfg = automationState.config;
+        if (!cfg) return; // Early return if config is null
         const idx = automationState.currentIndex;
         const name = sanitizeFilename(prompt.substring(0, 50));
         txtFn = String(idx + 1).padStart(3, '0') + '_' + name + '.txt';
@@ -294,7 +301,7 @@ function handleUnpause() {
 
 function checkScheduledPause() {
     const cfg = automationState.config;
-    if (!cfg.scheduledPauseEnabled) return false;
+    if (!cfg || !cfg.scheduledPauseEnabled) return false;
 
     // Increment processed count
     automationState.processedSinceLastPause++;
@@ -415,6 +422,10 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
 
         if (isVideoOrImage && isFromGoogleLabs) {
             const cfg = automationState.config;
+            if (!cfg) {
+                console.log('[BG] Config is null, cannot rename file');
+                return false;
+            }
             const idx = automationState.currentIndex;
             const prompt = automationState.prompts[idx] || '';
             const name = sanitizeFilename(prompt.substring(0, 50));
