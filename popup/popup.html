@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Flow Automator</title>
+  <link rel="stylesheet" href="popup.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <div class="logo-icon">
+          <span class="logo-text">Flow</span>
+        </div>
+        <h1>Flow Automator</h1>
+      </div>
+      <div class="status-indicator" id="statusIndicator">
+        <span class="status-dot"></span>
+        <span class="status-text">Pronto</span>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <!-- Generation Mode -->
+      <div class="form-group">
+        <label class="form-label">
+          <svg class="label-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M23 7l-7 5 7 5V7z"></path>
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+          </svg>
+          Modo de Geração:
+        </label>
+        <div class="select-wrapper">
+          <select id="generationMode" class="form-select">
+            <option value="video">🎬 Texto para Vídeo</option>
+            <option value="image">🖼️ Texto para Imagem</option>
+          </select>
+          <svg class="select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Prompts Textarea -->
+      <div class="form-group">
+        <label class="form-label">
+          <svg class="label-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="17" y1="10" x2="3" y2="10"></line>
+            <line x1="21" y1="6" x2="3" y2="6"></line>
+            <line x1="21" y1="14" x2="3" y2="14"></line>
+            <line x1="17" y1="18" x2="3" y2="18"></line>
+          </svg>
+          Prompts (um por linha):
+          <span style="color: #f59e0b; font-size: 11px; font-weight: normal; margin-left: 6px;">⚠️ Em inglês</span>
+        </label>
+        <div class="textarea-wrapper">
+          <textarea id="prompts" class="form-textarea"
+            placeholder="Prompts must be in ENGLISH (one per line)&#10;&#10;Example:&#10;A cinematic shot of a mountain sunset&#10;A person walking on the beach"></textarea>
+        </div>
+        <div class="textarea-actions">
+          <button type="button" id="clearPrompts" class="btn-icon" title="Limpar prompts">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="3 6 5 6 21 6"></polyline>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            </svg>
+          </button>
+          <span class="prompt-count" id="promptCount">0 prompts</span>
+        </div>
+      </div>
+
+      <!-- Aspect Ratio Section - Grouped -->
+      <div class="aspect-ratio-section"
+        style="margin-top: 24px; padding: 16px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md);">
+        <!-- Aspect Ratio - abaixo dos prompts -->
+        <div class="form-group" style="margin-bottom: 12px;">
+          <label class="form-label">
+            <svg class="label-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="6" y="6" width="12" height="12" rx="1" ry="1"></rect>
+              <path d="M3 9h18M3 15h18M9 3v18M15 3v18"></path>
+            </svg>
+            Proporção (Aspect Ratio):
+          </label>
+          <div class="select-wrapper">
+            <select id="aspectRatio" class="form-select">
+              <option value="16:9">16:9 (Paisagem)</option>
+              <option value="9:16">9:16 (Retrato)</option>
+            </select>
+            <svg class="select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+          </div>
+        </div>
+
+        <!-- Randomize Aspect Ratio -->
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="checkbox-wrapper">
+            <input type="checkbox" id="randomizeAspectRatio">
+            <span class="checkbox-custom"></span>
+            <span class="checkbox-label">Randomize Proporção</span>
+          </label>
+          <div id="randomAspectRatioOptions" style="margin-left: 30px; margin-top: 10px; display: none;">
+            <p style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;">Escolha quais incluir no
+              sorteio (mínimo 1):</p>
+            <label class="checkbox-wrapper" style="margin-bottom: 4px;">
+              <input type="checkbox" id="randomIncludePortrait" checked>
+              <span class="checkbox-custom"></span>
+              <span class="checkbox-label" style="font-size: 13px;">Portrait (9:16)</span>
+            </label>
+            <label class="checkbox-wrapper">
+              <input type="checkbox" id="randomIncludeLandscape" checked>
+              <span class="checkbox-custom"></span>
+              <span class="checkbox-label" style="font-size: 13px;">Landscape (16:9)</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Options Section -->
+      <div class="options-section">
+        <div class="option-row">
+          <label class="checkbox-wrapper">
+            <input type="checkbox" id="autoDownload" checked>
+            <span class="checkbox-custom"></span>
+            <span class="checkbox-label">Baixar automaticamente</span>
+          </label>
+        </div>
+
+        <div class="option-row" id="upscaleRow">
+          <label class="checkbox-wrapper">
+            <input type="checkbox" id="doUpscale" checked>
+            <span class="checkbox-custom"></span>
+            <span class="checkbox-label">Fazer Upscale (1080p)</span>
+          </label>
+        </div>
+
+        <!-- Image Resolution (only for images) -->
+        <div class="form-group" id="imageResolutionGroup" style="display: none; margin-top: 4px;">
+          <label class="form-label">
+            <svg class="label-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+              <circle cx="8.5" cy="8.5" r="1.5"></circle>
+              <polyline points="21 15 16 10 5 21"></polyline>
+            </svg>
+            Resolução da Imagem:
+          </label>
+          <div class="select-wrapper">
+            <select id="imageResolution" class="form-select">
+              <option value="1k">1K</option>
+              <option value="2k" selected>2K</option>
+              <option value="4k">4K</option>
+            </select>
+            <svg class="select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+          </div>
+        </div>
+
+        <div class="option-row">
+          <label class="checkbox-wrapper">
+            <input type="checkbox" id="savePromptTxt" checked>
+            <span class="checkbox-custom"></span>
+            <span class="checkbox-label">Salvar prompt em arquivo .txt</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Subfolder Input -->
+      <div class="form-group">
+        <label class="form-label">
+          <svg class="label-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+          </svg>
+          Nome da Subpasta (dentro de Downloads):
+        </label>
+        <input type="text" id="subfolder" class="form-input" placeholder="flow_videos_12_25">
+      </div>
+
+      <!-- Delay Input -->
+      <div class="form-group">
+        <label class="form-label">
+          <svg class="label-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"></circle>
+            <polyline points="12 6 12 12 16 14"></polyline>
+          </svg>
+          Delay após download (segundos):
+        </label>
+        <input type="number" id="delaySeconds" class="form-input" value="5" min="1" max="120">
+      </div>
+
+      <!-- Scheduled Pause Section -->
+      <div class="form-group"
+        style="margin-top: 20px; padding: 14px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md);">
+        <label class="checkbox-wrapper">
+          <input type="checkbox" id="scheduledPauseEnabled">
+          <span class="checkbox-custom"></span>
+          <span class="checkbox-label">⏸️ Pausa programada</span>
+        </label>
+
+        <div id="scheduledPauseOptions" style="margin-top: 12px; display: none;">
+          <!-- Interval input -->
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+            <span style="font-size: 12px; color: var(--text-secondary);">A cada</span>
+            <input type="number" id="pauseEveryN" class="form-input" value="3" min="1" max="100"
+              style="width: 60px; padding: 6px 10px;">
+            <span id="pauseUnitText" style="font-size: 12px; color: var(--text-secondary);">imagens</span>
+          </div>
+
+          <!-- Dual Range Slider -->
+          <div>
+            <label class="form-label" style="font-size: 12px; margin-bottom: 12px;">
+              Intervalo de pausa aleatório (minutos):
+            </label>
+
+            <!-- Value displays above slider -->
+            <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+              <div
+                style="background: var(--bg-tertiary); padding: 6px 12px; border-radius: 6px; font-size: 13px; font-weight: 600; color: var(--accent-primary);">
+                <span id="pauseMinDisplay">1</span> min
+              </div>
+              <div
+                style="background: var(--bg-tertiary); padding: 6px 12px; border-radius: 6px; font-size: 13px; font-weight: 600; color: var(--accent-primary);">
+                <span id="pauseMaxDisplay">6</span> min
+              </div>
+            </div>
+
+            <!-- Dual range slider container -->
+            <div class="dual-range-container">
+              <input type="range" id="pauseMinMinutes" class="range-slider range-slider-min" value="1" min="1" max="60"
+                step="1">
+              <input type="range" id="pauseMaxMinutes" class="range-slider range-slider-max" value="6" min="1" max="60"
+                step="1">
+              <div class="range-track"></div>
+              <div class="range-fill" id="rangeFill"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Advanced Settings Collapsible -->
+      <details class="advanced-section">
+        <summary class="advanced-toggle">
+          <svg class="toggle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path
+              d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
+            </path>
+          </svg>
+          Configurações Especiais
+        </summary>
+        <div class="advanced-content">
+          <div class="form-group">
+            <label class="form-label small">Timeout de geração (segundos):</label>
+            <input type="number" id="generationTimeout" class="form-input" value="180" min="60" max="600">
+          </div>
+          <div class="form-group">
+            <label class="form-label small">Tentativas máximas por prompt:</label>
+            <input type="number" id="maxRetries" class="form-input" value="2" min="1" max="5">
+          </div>
+        </div>
+      </details>
+    </main>
+
+    <!-- Action Buttons -->
+    <footer class="footer">
+      <div class="progress-section" id="progressSection" style="display: none;">
+        <div class="progress-info">
+          <span id="progressText">Processando prompt 1 de 5...</span>
+          <span id="progressPercent">0%</span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+        </div>
+      </div>
+
+      <div class="button-group">
+        <button id="startBtn" class="btn btn-primary">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="5 3 19 12 5 21 5 3"></polygon>
+          </svg>
+          Iniciar Automação
+        </button>
+        <button id="unpauseBtn" class="btn btn-primary" style="display: none;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="5 3 19 12 5 21 5 3"></polygon>
+          </svg>
+          Continuar
+        </button>
+        <button id="stopBtn" class="btn btn-danger" style="display: none;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="6" y="6" width="12" height="12"></rect>
+          </svg>
+          Parar
+        </button>
+      </div>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+
+</html>

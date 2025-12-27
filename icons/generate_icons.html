@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Generate Icons</title>
+</head>
+
+<body>
+    <canvas id="canvas" width="128" height="128"></canvas>
+    <script>
+        function generateIcon(size) {
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const ctx = canvas.getContext('2d');
+
+            // Background gradient
+            const grad = ctx.createLinearGradient(0, 0, size, size);
+            grad.addColorStop(0, '#7c3aed');
+            grad.addColorStop(0.5, '#a855f7');
+            grad.addColorStop(1, '#c084fc');
+
+            // Rounded rect
+            const radius = size * 0.2;
+            const padding = size * 0.06;
+            ctx.beginPath();
+            ctx.roundRect(padding, padding, size - padding * 2, size - padding * 2, radius);
+            ctx.fillStyle = grad;
+            ctx.fill();
+
+            // Play triangle
+            ctx.beginPath();
+            const cx = size * 0.45;
+            const cy = size * 0.5;
+            const triSize = size * 0.35;
+            ctx.moveTo(cx - triSize * 0.3, cy - triSize * 0.5);
+            ctx.lineTo(cx - triSize * 0.3, cy + triSize * 0.5);
+            ctx.lineTo(cx + triSize * 0.5, cy);
+            ctx.closePath();
+            ctx.fillStyle = '#ffffff';
+            ctx.fill();
+
+            // Dots
+            ctx.beginPath();
+            ctx.arc(size * 0.75, size * 0.25, size * 0.05, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255,255,255,0.6)';
+            ctx.fill();
+
+            ctx.beginPath();
+            ctx.arc(size * 0.25, size * 0.75, size * 0.05, 0, Math.PI * 2);
+            ctx.fill();
+
+            return canvas.toDataURL('image/png');
+        }
+
+        // Generate and display download links
+        [16, 32, 48, 128].forEach(size => {
+            const dataUrl = generateIcon(size);
+            const link = document.createElement('a');
+            link.href = dataUrl;
+            link.download = `icon${size}.png`;
+            link.textContent = `Download icon${size}.png`;
+            link.style.display = 'block';
+            link.style.margin = '10px';
+            document.body.appendChild(link);
+
+            const img = document.createElement('img');
+            img.src = dataUrl;
+            img.style.margin = '10px';
+            document.body.appendChild(img);
+        });
+    </script>
+</body>
+
+</html>
