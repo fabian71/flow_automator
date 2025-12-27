@@ -439,8 +439,15 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
                 newFilename = cfg.subfolder + '/' + newFilename;
             }
 
-            automationState.lastDownloadBasename = basename;
-            automationState.lastDownloadSubfolder = cfg.subfolder || '';
+            // Only update lastDownloadBasename if it's different (i.e. first download, not upscale)
+            // This prevents upscale downloads from overwriting the basename when they arrive late
+            if (automationState.lastDownloadBasename !== basename) {
+                console.log('[BG] First download for this prompt - updating basename to:', basename);
+                automationState.lastDownloadBasename = basename;
+                automationState.lastDownloadSubfolder = cfg.subfolder || '';
+            } else {
+                console.log('[BG] Upscale download detected - keeping existing basename:', basename);
+            }
 
             console.log('[BG] Renaming video/image to:', newFilename);
             suggest({ filename: newFilename, conflictAction: 'uniquify' });

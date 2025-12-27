@@ -298,8 +298,8 @@ function findCardsWithPrompt(promptText, mode) {
                 }
             }
 
-            // Check if this prompt matches
-            if (promptText === promptLower || promptText.includes(promptLower.substring(0, 40))) {
+            // Check if this prompt matches (EXACT match only to avoid false positives)
+            if (promptText === promptLower) {
                 const dataIndex = parseInt(wrapper.getAttribute('data-index')) || 999;
 
                 // Find the card container
@@ -344,8 +344,8 @@ function findCardsWithPrompt(promptText, mode) {
                 }
             }
 
-            // Check if this prompt matches
-            if (promptText === promptLower || promptText.includes(promptLower.substring(0, 40))) {
+            // Check if this prompt matches (EXACT match only to avoid false positives)
+            if (promptText === promptLower) {
                 const dataIndex = parseInt(wrapper.getAttribute('data-index')) || 999;
 
                 // Find the card container (for download button)
