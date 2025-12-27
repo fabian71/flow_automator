@@ -258,6 +258,9 @@ async function savePromptTxt(prompt) {
 
         console.log('[BG] Started txt download with id:', downloadId, 'Target:', txtFn);
 
+        // Wait a bit before clearing basename to ensure txt download is processed
+        await sleep(1000);
+
         // Clear the saved basename
         automationState.lastDownloadBasename = '';
         automationState.lastDownloadSubfolder = '';
