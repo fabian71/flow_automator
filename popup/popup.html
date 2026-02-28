@@ -34,17 +34,92 @@
             <path d="M23 7l-7 5 7 5V7z"></path>
             <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
           </svg>
-          Modo de Geração:
+          Modo de Geracao:
         </label>
         <div class="select-wrapper">
           <select id="generationMode" class="form-select">
-            <option value="video">🎬 Texto para Vídeo</option>
-            <option value="image">🖼️ Texto para Imagem</option>
+            <option value="video">Video</option>
+            <option value="image">Imagem</option>
           </select>
           <svg class="select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="6 9 12 15 18 9"></polyline>
           </svg>
         </div>
+      </div>
+
+      <!-- Image Model Selection (Only visible in image mode) -->
+      <div class="form-group" id="imageModelGroup" style="display: none;">
+        <label class="form-label">
+          <svg class="label-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2L2 22h20L12 2z"></path>
+          </svg>
+          Modelo (Apenas Imagem):
+        </label>
+        <div class="select-wrapper">
+          <select id="imageModel" class="form-select">
+            <option value="Nano Banana Pro">Nano Banana Pro</option>
+            <option value="Nano Banana 2">Nano Banana 2</option>
+            <option value="Imagen 4">Imagen 4</option>
+          </select>
+          <svg class="select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Video Duration (Visible only in Video mode) -->
+      <div class="form-group" id="videoDurationGroup" style="display: none;">
+        <label class="form-label">
+          <svg class="label-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"></circle>
+            <polyline points="12 6 12 12 16 14"></polyline>
+          </svg>
+          Duracao do Video:
+        </label>
+        <div class="select-wrapper">
+          <select id="videoDuration" class="form-select">
+            <option value="6s">6 Segundos</option>
+            <option value="10s">10 Segundos</option>
+          </select>
+          <svg class="select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Image Upload Section -->
+      <div class="form-group" id="imageUploadGroup" style="display: none;">
+        <label class="form-label">
+          <svg class="label-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+            <circle cx="12" cy="13" r="4"></circle>
+          </svg>
+          Upload Imagens (Opcional):
+        </label>
+        <div class="file-upload-wrapper"
+          style="border: 2px dashed var(--border-color); border-radius: 8px; padding: 15px; text-align: center; cursor: pointer; transition: all 0.2s;"
+          id="dropZone">
+          <input type="file" id="imageInput" multiple accept="image/*" style="display: none;">
+          <span style="font-size: 24px; display: block; margin-bottom: 5px;">📂</span>
+          <div id="dropZoneText" style="color: var(--text-secondary); font-size: 13px;">
+            Clique para selecionar imagens
+          </div>
+          <div id="imageCountBadge"
+            style="display:none; color: var(--accent-primary); font-size: 12px; margin-top: 5px; font-weight: bold;">
+          </div>
+        </div>
+        <!-- Image Previews -->
+        <div id="imagePreviewContainer"
+          style="display:none; margin-top: 10px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;"></div>
+        <button id="clearImagesBtn" class="btn btn-danger"
+          style="display:none; margin-top: 10px; width: 100%; font-size: 12px; padding: 8px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            style="width: 14px; height: 14px;">
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+          </svg>
+          Limpar Imagens
+        </button>
       </div>
 
       <!-- Prompts Textarea -->
@@ -84,7 +159,7 @@
               <rect x="6" y="6" width="12" height="12" rx="1" ry="1"></rect>
               <path d="M3 9h18M3 15h18M9 3v18M15 3v18"></path>
             </svg>
-            Proporção (Aspect Ratio):
+            Proporcao (Aspect Ratio):
           </label>
           <div class="select-wrapper">
             <select id="aspectRatio" class="form-select">
@@ -102,7 +177,7 @@
           <label class="checkbox-wrapper">
             <input type="checkbox" id="randomizeAspectRatio">
             <span class="checkbox-custom"></span>
-            <span class="checkbox-label">Randomize Proporção</span>
+            <span class="checkbox-label">Randomize Proporcao</span>
           </label>
           <div id="randomAspectRatioOptions" style="margin-left: 30px; margin-top: 10px; display: none;">
             <p style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;">Escolha quais incluir no
@@ -147,7 +222,7 @@
               <circle cx="8.5" cy="8.5" r="1.5"></circle>
               <polyline points="21 15 16 10 5 21"></polyline>
             </svg>
-            Resolução da Imagem:
+            Resolucao da Imagem:
           </label>
           <div class="select-wrapper">
             <select id="imageResolution" class="form-select">
@@ -251,7 +326,7 @@
               d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
             </path>
           </svg>
-          Configurações Especiais
+          Configuracoes Especiais
         </summary>
         <div class="advanced-content">
           <div class="form-group">
@@ -283,7 +358,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polygon points="5 3 19 12 5 21 5 3"></polygon>
           </svg>
-          Iniciar Automação
+          Iniciar Automacao
         </button>
         <button id="unpauseBtn" class="btn btn-primary" style="display: none;">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

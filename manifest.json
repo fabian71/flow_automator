@@ -2,13 +2,15 @@
     "manifest_version": 3,
     "name": "Flow Automator",
     "description": "Automatiza a geração de vídeos e imagens no Google Flow com lista de prompts",
-    "version": "2.0.0",
+    "version": "3.0",
     "permissions": [
         "activeTab",
         "storage",
+        "unlimitedStorage",
         "downloads",
         "scripting",
-        "tabs"
+        "tabs",
+        "debugger"
     ],
     "host_permissions": [
         "https://labs.google/*"
@@ -35,7 +37,7 @@
     "content_scripts": [
         {
             "matches": [
-                "https://labs.google/fx/tools/flow/*"
+                "https://labs.google/fx/*"
             ],
             "js": [
                 "content/content.js"

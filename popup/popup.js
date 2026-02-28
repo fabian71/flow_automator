@@ -11,6 +11,8 @@ const elements = {
   delaySeconds: document.getElementById('delaySeconds'),
   aspectRatio: document.getElementById('aspectRatio'),
   aspectRatioGroup: document.getElementById('aspectRatioGroup'),
+  imageModel: document.getElementById('imageModel'),
+  imageModelGroup: document.getElementById('imageModelGroup'),
   imageResolution: document.getElementById('imageResolution'),
   imageResolutionGroup: document.getElementById('imageResolutionGroup'),
   upscaleRow: document.getElementById('upscaleRow'),
@@ -36,11 +38,21 @@ const elements = {
   pauseMaxMinutes: document.getElementById('pauseMaxMinutes'),
   pauseMinDisplay: document.getElementById('pauseMinDisplay'),
   pauseMaxDisplay: document.getElementById('pauseMaxDisplay'),
-  rangeFill: document.getElementById('rangeFill')
+  rangeFill: document.getElementById('rangeFill'),
+  imageInput: document.getElementById('imageInput'),
+  dropZone: document.getElementById('dropZone'),
+  dropZoneText: document.getElementById('dropZoneText'),
+  imageCountBadge: document.getElementById('imageCountBadge'),
+  imageUploadGroup: document.getElementById('imageUploadGroup'),
+  imagePreviewContainer: document.getElementById('imagePreviewContainer'),
+  clearImagesBtn: document.getElementById('clearImagesBtn'),
+  videoDuration: document.getElementById('videoDuration'),
+  videoDurationGroup: document.getElementById('videoDurationGroup')
 };
 
 // ===== State =====
 let isProcessing = false;
+let selectedImages = [];
 
 // ===== Initialize =====
 document.addEventListener('DOMContentLoaded', async () => {
@@ -62,6 +74,21 @@ document.addEventListener('DOMContentLoaded', async () => {
 // Update visibility based on mode and aspect ratio
 function updateModeVisibility() {
   const isImage = elements.generationMode.value === 'image';
+  const isVideo = elements.generationMode.value === 'video';
+
+  if (elements.imageUploadGroup) {
+    // Enable image upload for Video mode (Image to Video)
+    elements.imageUploadGroup.style.display = isVideo ? 'block' : 'none';
+  }
+
+  if (elements.videoDurationGroup) {
+    elements.videoDurationGroup.style.display = isVideo ? 'block' : 'none';
+  }
+
+  if (elements.imageModelGroup) {
+    elements.imageModelGroup.style.display = isImage ? 'block' : 'none';
+  }
+
   const isPortrait = elements.aspectRatio.value === '9:16';
   const autoDownloadEnabled = elements.autoDownload.checked;
 
@@ -183,7 +210,7 @@ function setupEventListeners() {
   // Update pause unit text based on mode
   elements.generationMode.addEventListener('change', () => {
     const isImage = elements.generationMode.value === 'image';
-    elements.pauseUnitText.textContent = isImage ? 'imagens' : 'vídeos';
+    elements.pauseUnitText.textContent = isImage ? 'imagens' : 'videos';
   });
 
   // Update pause range display and fill
@@ -228,7 +255,9 @@ function setupEventListeners() {
     elements.delaySeconds,
     elements.generationTimeout,
     elements.maxRetries,
+    elements.imageModel,
     elements.imageResolution,
+    elements.videoDuration,
     elements.randomIncludePortrait,
     elements.randomIncludeLandscape
   ];
@@ -267,11 +296,178 @@ function setupEventListeners() {
       handleUnpaused();
     }
   });
+
+  // Image upload handling
+  if (elements.dropZone && elements.imageInput) {
+    elements.dropZone.addEventListener('click', () => {
+      elements.imageInput.click();
+    });
+
+    elements.dropZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      elements.dropZone.style.borderColor = 'var(--accent-primary)';
+      elements.dropZone.style.backgroundColor = 'var(--bg-tertiary)';
+    });
+
+    elements.dropZone.addEventListener('dragleave', (e) => {
+      e.preventDefault();
+      elements.dropZone.style.borderColor = 'var(--border-color)';
+      elements.dropZone.style.backgroundColor = 'transparent';
+    });
+
+    elements.dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      elements.dropZone.style.borderColor = 'var(--border-color)';
+      elements.dropZone.style.backgroundColor = 'transparent';
+
+      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        handleFiles(e.dataTransfer.files);
+      }
+    });
+
+    elements.imageInput.addEventListener('change', (e) => {
+      if (e.target.files && e.target.files.length > 0) {
+        handleFiles(e.target.files);
+      }
+    });
+
+    // Clear images button
+    if (elements.clearImagesBtn) {
+      elements.clearImagesBtn.addEventListener('click', () => {
+        selectedImages = [];
+        updateImagePreview();
+        saveImagesToStorage();
+      });
+    }
+  }
 }
 
+function updateImagePreview() {
+  elements.imageCountBadge.style.display = selectedImages.length > 0 ? 'block' : 'none';
+  elements.imageCountBadge.textContent = `${selectedImages.length} imagem(ns) selecionada(s)`;
+
+  elements.dropZoneText.style.display = selectedImages.length > 0 ? 'none' : 'block';
+
+  // Toggle active border depending on functionality state or styling requirements
+  // elements.dropZone.style.borderColor = selectedImages.length > 0 ? 'var(--success-color)' : 'var(--border-color)';
+
+  elements.clearImagesBtn.style.display = selectedImages.length > 0 ? 'flex' : 'none';
+
+  // Show previews
+  elements.imagePreviewContainer.innerHTML = '';
+
+  if (selectedImages.length > 0) {
+    elements.imagePreviewContainer.style.display = 'grid';
+
+    selectedImages.forEach((file, index) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const div = document.createElement('div');
+        div.className = 'image-preview-item';
+        div.style.position = 'relative';
+        div.style.aspectRatio = '1';
+        div.style.borderRadius = 'var(--radius-sm)';
+        div.style.overflow = 'hidden';
+        div.style.border = '1px solid var(--border-color)';
+
+        const img = document.createElement('img');
+        img.src = e.target.result;
+        img.style.width = '100%';
+        img.style.height = '100%';
+        img.style.objectFit = 'cover';
+
+        // Remove button
+        const removeBtn = document.createElement('div');
+        removeBtn.innerHTML = '×';
+        removeBtn.style.position = 'absolute';
+        removeBtn.style.top = '2px';
+        removeBtn.style.right = '2px';
+        removeBtn.style.width = '18px';
+        removeBtn.style.height = '18px';
+        removeBtn.style.background = 'rgba(239, 68, 68, 0.9)'; // Red
+        removeBtn.style.color = 'white';
+        removeBtn.style.borderRadius = '50%';
+        removeBtn.style.display = 'flex';
+        removeBtn.style.alignItems = 'center';
+        removeBtn.style.justifyContent = 'center';
+        removeBtn.style.cursor = 'pointer';
+        removeBtn.style.fontSize = '14px';
+        removeBtn.style.fontWeight = 'bold';
+        removeBtn.style.boxShadow = '0 2px 4px rgba(0,0,0,0.3)';
+        removeBtn.style.zIndex = '10';
+
+        removeBtn.onclick = (ev) => {
+          ev.stopPropagation();
+          removeImage(index);
+        };
+
+        div.appendChild(img);
+        div.appendChild(removeBtn);
+        elements.imagePreviewContainer.appendChild(div);
+      };
+      reader.readAsDataURL(file);
+    });
+  } else {
+    elements.imagePreviewContainer.style.display = 'none';
+    // Reset file input
+    if (elements.imageInput) elements.imageInput.value = '';
+  }
+}
+
+function removeImage(index) {
+  selectedImages.splice(index, 1);
+  updateImagePreview();
+  saveImagesToStorage();
+}
+
+function handleFiles(filesList) {
+  const validFiles = Array.from(filesList).filter(file => file.type.startsWith('image/'));
+
+  if (validFiles.length === 0) return;
+
+  // Append new files instead of replacing
+  // Append new files instead of replacing
+  selectedImages = [...selectedImages, ...validFiles];
+  updateImagePreview();
+  saveImagesToStorage();
+}
+
+// Save current list of files to storage
+async function saveImagesToStorage() {
+  try {
+    // Clear all existing first to avoid orphans
+    const allKeys = await chrome.storage.local.get(null);
+    const keysToRemove = Object.keys(allKeys).filter(k => k.startsWith('flow_img_'));
+    if (keysToRemove.length > 0) {
+      await chrome.storage.local.remove(keysToRemove);
+    }
+
+    // Save current files
+    const processed = await Promise.all(selectedImages.map(file => readFileAsDataURL(file)));
+    for (let i = 0; i < processed.length; i++) {
+      await chrome.storage.local.set({ [`flow_img_${i}`]: processed[i] });
+    }
+  } catch (e) {
+    console.error('Error saving images:', e);
+  }
+}
+
+
+
 // ===== Functions =====
+// Remove invisible Unicode characters (zero-width spaces, etc)
+function cleanInvisibleChars(text) {
+  return text
+    .replace(/[\u200B-\u200D\uFEFF]/g, '') // Zero-width spaces, joiners, BOM
+    .replace(/[\u00A0]/g, ' ') // Non-breaking space to regular space
+    .trim();
+}
+
 function updatePromptCount() {
-  const prompts = elements.prompts.value.trim().split('\n').filter(p => p.trim());
+  const prompts = elements.prompts.value
+    .split('\n')
+    .map(p => cleanInvisibleChars(p))
+    .filter(p => p.length > 0);
   const count = prompts.length;
   elements.promptCount.textContent = `${count} prompt${count !== 1 ? 's' : ''}`;
 }
@@ -286,6 +482,7 @@ async function loadSettings() {
     'subfolder',
     'delaySeconds',
     'aspectRatio',
+    'imageModel',
     'imageResolution',
     'generationTimeout',
     'maxRetries',
@@ -295,8 +492,40 @@ async function loadSettings() {
     'scheduledPauseEnabled',
     'pauseEveryN',
     'pauseMinMinutes',
-    'pauseMaxMinutes'
+    'pauseMaxMinutes',
+    'videoDuration'
   ]);
+
+  // Load saved images from Chunked Storage
+  try {
+    // 1. Scan for stored keys
+    const allKeys = await chrome.storage.local.get(null);
+    const imageKeys = Object.keys(allKeys)
+      .filter(k => k.startsWith('flow_img_'))
+      .sort((a, b) => {
+        // Sort by index
+        const idxA = parseInt(a.replace('flow_img_', ''));
+        const idxB = parseInt(b.replace('flow_img_', ''));
+        return idxA - idxB;
+      });
+
+    if (imageKeys.length > 0) {
+      // 2. Reconstruct File objects from base64
+      const files = [];
+      for (const key of imageKeys) {
+        const fileData = allKeys[key];
+        if (fileData && fileData.data) {
+          const blob = await (await fetch(fileData.data)).blob();
+          const file = new File([blob], fileData.name, { type: fileData.type });
+          files.push(file);
+        }
+      }
+      selectedImages = files;
+      updateImagePreview();
+    }
+  } catch (e) {
+    console.error('Error loading saved images:', e);
+  }
 
   if (settings.generationMode) elements.generationMode.value = settings.generationMode;
   if (settings.prompts) elements.prompts.value = settings.prompts;
@@ -306,9 +535,11 @@ async function loadSettings() {
   if (settings.subfolder) elements.subfolder.value = settings.subfolder;
   if (settings.delaySeconds) elements.delaySeconds.value = settings.delaySeconds;
   if (settings.aspectRatio) elements.aspectRatio.value = settings.aspectRatio;
+  if (settings.imageModel) elements.imageModel.value = settings.imageModel;
   if (settings.imageResolution) elements.imageResolution.value = settings.imageResolution;
   if (settings.generationTimeout) elements.generationTimeout.value = settings.generationTimeout;
   if (settings.maxRetries) elements.maxRetries.value = settings.maxRetries;
+  if (settings.videoDuration) elements.videoDuration.value = settings.videoDuration;
 
   // Randomization settings
   if (settings.randomizeAspectRatio !== undefined) {
@@ -355,6 +586,7 @@ async function saveSettings() {
     subfolder: elements.subfolder.value,
     delaySeconds: parseInt(elements.delaySeconds.value) || 5,
     aspectRatio: elements.aspectRatio.value,
+    imageModel: elements.imageModel.value,
     imageResolution: elements.imageResolution.value,
     generationTimeout: parseInt(elements.generationTimeout.value) || 180,
     maxRetries: parseInt(elements.maxRetries.value) || 2,
@@ -364,7 +596,8 @@ async function saveSettings() {
     scheduledPauseEnabled: elements.scheduledPauseEnabled.checked,
     pauseEveryN: parseInt(elements.pauseEveryN.value) || 3,
     pauseMinMinutes: parseInt(elements.pauseMinMinutes.value) || 1,
-    pauseMaxMinutes: parseInt(elements.pauseMaxMinutes.value) || 6
+    pauseMaxMinutes: parseInt(elements.pauseMaxMinutes.value) || 6,
+    videoDuration: elements.videoDuration.value
   });
 }
 
@@ -377,18 +610,83 @@ async function checkProcessingStatus() {
   }
 }
 
-async function startAutomation() {
-  const prompts = elements.prompts.value.trim().split('\n').filter(p => p.trim());
 
-  if (prompts.length === 0) {
-    alert('Por favor, adicione pelo menos um prompt.');
+
+
+// Helper to read file as DataURL and detect aspect ratio
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        // Detect aspect ratio: 16:9 (video landscape) or 9:16 (video portrait) 
+        // Logic: if width >= height -> Landscape (16:9), else -> Portrait (9:16)
+        const aspectRatio = img.width >= img.height ? '16:9' : '9:16';
+
+        resolve({
+          name: file.name,
+          type: file.type,
+          data: reader.result,
+          aspectRatio: aspectRatio,
+          width: img.width,
+          height: img.height
+        });
+      };
+      img.onerror = () => {
+        // Fallback if image load fails, just resolve with data
+        resolve({
+          name: file.name,
+          type: file.type,
+          data: reader.result,
+          aspectRatio: '16:9' // Default
+        });
+      };
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function startAutomation() {
+  // Debug: Show raw input
+  console.log('[Flow Automator] Raw prompts input:', elements.prompts.value);
+
+  const prompts = elements.prompts.value
+    .split('\n')
+    .map(p => cleanInvisibleChars(p))
+    .filter(p => p.length > 0);
+
+  // Debug: Show filtered prompts
+  console.log('[Flow Automator] Filtered prompts:', prompts);
+  console.log('[Flow Automator] Total prompts after filter:', prompts.length);
+
+  // Validation: Must have at least one prompt OR one image (if image-to-video mode)
+  const isVideoMode = elements.generationMode.value === 'video';
+  const hasImages = selectedImages.length > 0;
+
+  if (prompts.length === 0 && (!isVideoMode || !hasImages)) {
+    alert('Por favor, adicione pelo menos um prompt' + (isVideoMode ? ' ou uma imagem.' : '.'));
     return;
+  }
+
+  // If we have images in Video mode, process them
+  let processedImages = [];
+  if (isVideoMode && hasImages) {
+    elements.statusIndicator.querySelector('.status-text').textContent = 'Lendo imagens...';
+    try {
+      processedImages = await Promise.all(selectedImages.map(file => readFileAsDataURL(file)));
+    } catch (e) {
+      alert('Erro ao ler imagens: ' + e.message);
+      return;
+    }
   }
 
   // Get active tab
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-  if (!tab || !tab.url.includes('labs.google/fx/tools/flow')) {
+  if (!tab || !(tab.url.includes('labs.google/fx') && tab.url.includes('/tools/flow'))) {
     alert('Por favor, abra o Google Flow antes de iniciar a automação.\n\nhttps://labs.google/fx/tools/flow');
     return;
   }
@@ -399,12 +697,39 @@ async function startAutomation() {
   // Save current settings
   await saveSettings();
 
+  // Handle Image Storage (Chunked Storage Strategy)
+  if (processedImages.length > 0) {
+    elements.statusIndicator.querySelector('.status-text').textContent = 'Armazenando dados...';
+    try {
+      // 1. Clear old image data
+      const allKeys = await chrome.storage.local.get(null);
+      const keysToRemove = Object.keys(allKeys).filter(k => k.startsWith('flow_img_'));
+      if (keysToRemove.length > 0) {
+        await chrome.storage.local.remove(keysToRemove);
+      }
+
+      // 2. Save new images individually
+      for (let i = 0; i < processedImages.length; i++) {
+        await chrome.storage.local.set({ [`flow_img_${i}`]: processedImages[i] });
+      }
+    } catch (e) {
+      alert('Erro ao salvar imagens no storage: ' + e.message);
+      hideProcessingUI();
+      isProcessing = false;
+      return;
+    }
+  }
+
   // Send message to background script
+  // Note: we do NOT send the images array, just the count
   chrome.runtime.sendMessage({
     type: 'start',
     config: {
       tabId: tab.id,
       prompts: prompts,
+      images: [], // Empty array to avoid message size limit
+      imageCount: processedImages.length, // Send count instead
+      usingStorageImages: true, // Flag to tell BG to read from storage
       mode: elements.generationMode.value,
       autoDownload: elements.autoDownload.checked,
       doUpscale: elements.doUpscale.checked,
@@ -412,6 +737,7 @@ async function startAutomation() {
       subfolder: elements.subfolder.value,
       delaySeconds: parseInt(elements.delaySeconds.value) || 5,
       aspectRatio: elements.aspectRatio.value,
+      imageModel: elements.imageModel.value,
       imageResolution: elements.imageResolution.value,
       generationTimeout: parseInt(elements.generationTimeout.value) || 180,
       maxRetries: parseInt(elements.maxRetries.value) || 2,
@@ -421,7 +747,8 @@ async function startAutomation() {
       scheduledPauseEnabled: elements.scheduledPauseEnabled.checked,
       pauseEveryN: parseInt(elements.pauseEveryN.value) || 3,
       pauseMinMinutes: parseInt(elements.pauseMinMinutes.value) || 1,
-      pauseMaxMinutes: parseInt(elements.pauseMaxMinutes.value) || 6
+      pauseMaxMinutes: parseInt(elements.pauseMaxMinutes.value) || 6,
+      videoDuration: elements.videoDuration.value
     }
   });
 }
@@ -463,8 +790,11 @@ function setInputsDisabled(disabled) {
   elements.subfolder.disabled = disabled;
   elements.delaySeconds.disabled = disabled;
   elements.aspectRatio.disabled = disabled;
+  elements.videoDuration.disabled = disabled;
   elements.generationTimeout.disabled = disabled;
+
   elements.maxRetries.disabled = disabled;
+  if (elements.imageInput) elements.imageInput.disabled = disabled;
 }
 
 function updateProgress(current, total, status) {
@@ -507,7 +837,7 @@ function handleComplete(success, failed) {
   hideProcessingUI();
   isProcessing = false;
 
-  const message = `Automação concluída!\n\n✅ Sucesso: ${success}\n❌ Falhas: ${failed}`;
+  const message = `Automacao concluida!\n\nOK Sucesso: ${success}\nFAIL Falhas: ${failed}`;
   alert(message);
 }
 
