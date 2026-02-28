@@ -13,8 +13,12 @@ const elements = {
   aspectRatioGroup: document.getElementById('aspectRatioGroup'),
   imageModel: document.getElementById('imageModel'),
   imageModelGroup: document.getElementById('imageModelGroup'),
+  videoModel: document.getElementById('videoModel'),
+  videoModelGroup: document.getElementById('videoModelGroup'),
   imageResolution: document.getElementById('imageResolution'),
   imageResolutionGroup: document.getElementById('imageResolutionGroup'),
+  videoResolution: document.getElementById('videoResolution'),
+  videoResolutionGroup: document.getElementById('videoResolutionGroup'),
   upscaleRow: document.getElementById('upscaleRow'),
   generationTimeout: document.getElementById('generationTimeout'),
   maxRetries: document.getElementById('maxRetries'),
@@ -85,6 +89,10 @@ function updateModeVisibility() {
     elements.videoDurationGroup.style.display = isVideo ? 'block' : 'none';
   }
 
+  if (elements.videoModelGroup) {
+    elements.videoModelGroup.style.display = isVideo ? 'block' : 'none';
+  }
+
   if (elements.imageModelGroup) {
     elements.imageModelGroup.style.display = isImage ? 'block' : 'none';
   }
@@ -100,11 +108,21 @@ function updateModeVisibility() {
       // Hide upscale for images (they use resolution select)
       elements.upscaleRow.style.display = 'none';
     } else {
-      // Show for videos, but disable for 9:16 or if autoDownload is off
-      elements.upscaleRow.style.display = 'flex';
+      // Video now uses explicit resolution selector
+      elements.upscaleRow.style.display = 'none';
       const shouldDisable = isPortrait || !autoDownloadEnabled;
       elements.doUpscale.disabled = shouldDisable;
       elements.upscaleRow.style.opacity = shouldDisable ? '0.5' : '1';
+    }
+  }
+
+  if (elements.videoResolutionGroup) {
+    if (isVideo) {
+      elements.videoResolutionGroup.style.display = 'block';
+      elements.videoResolution.disabled = !autoDownloadEnabled;
+      elements.videoResolutionGroup.style.opacity = autoDownloadEnabled ? '1' : '0.5';
+    } else {
+      elements.videoResolutionGroup.style.display = 'none';
     }
   }
 
@@ -256,7 +274,9 @@ function setupEventListeners() {
     elements.generationTimeout,
     elements.maxRetries,
     elements.imageModel,
+    elements.videoModel,
     elements.imageResolution,
+    elements.videoResolution,
     elements.videoDuration,
     elements.randomIncludePortrait,
     elements.randomIncludeLandscape
@@ -483,7 +503,9 @@ async function loadSettings() {
     'delaySeconds',
     'aspectRatio',
     'imageModel',
+    'videoModel',
     'imageResolution',
+    'videoResolution',
     'generationTimeout',
     'maxRetries',
     'randomizeAspectRatio',
@@ -536,7 +558,9 @@ async function loadSettings() {
   if (settings.delaySeconds) elements.delaySeconds.value = settings.delaySeconds;
   if (settings.aspectRatio) elements.aspectRatio.value = settings.aspectRatio;
   if (settings.imageModel) elements.imageModel.value = settings.imageModel;
+  if (settings.videoModel) elements.videoModel.value = settings.videoModel;
   if (settings.imageResolution) elements.imageResolution.value = settings.imageResolution;
+  if (settings.videoResolution) elements.videoResolution.value = settings.videoResolution;
   if (settings.generationTimeout) elements.generationTimeout.value = settings.generationTimeout;
   if (settings.maxRetries) elements.maxRetries.value = settings.maxRetries;
   if (settings.videoDuration) elements.videoDuration.value = settings.videoDuration;
@@ -587,7 +611,9 @@ async function saveSettings() {
     delaySeconds: parseInt(elements.delaySeconds.value) || 5,
     aspectRatio: elements.aspectRatio.value,
     imageModel: elements.imageModel.value,
+    videoModel: elements.videoModel.value,
     imageResolution: elements.imageResolution.value,
+    videoResolution: elements.videoResolution.value,
     generationTimeout: parseInt(elements.generationTimeout.value) || 180,
     maxRetries: parseInt(elements.maxRetries.value) || 2,
     randomizeAspectRatio: elements.randomizeAspectRatio.checked,
@@ -738,7 +764,9 @@ async function startAutomation() {
       delaySeconds: parseInt(elements.delaySeconds.value) || 5,
       aspectRatio: elements.aspectRatio.value,
       imageModel: elements.imageModel.value,
+      videoModel: elements.videoModel.value,
       imageResolution: elements.imageResolution.value,
+      videoResolution: elements.videoResolution.value,
       generationTimeout: parseInt(elements.generationTimeout.value) || 180,
       maxRetries: parseInt(elements.maxRetries.value) || 2,
       randomizeAspectRatio: elements.randomizeAspectRatio.checked,
@@ -791,6 +819,8 @@ function setInputsDisabled(disabled) {
   elements.delaySeconds.disabled = disabled;
   elements.aspectRatio.disabled = disabled;
   elements.videoDuration.disabled = disabled;
+  if (elements.videoResolution) elements.videoResolution.disabled = disabled;
+  if (elements.videoModel) elements.videoModel.disabled = disabled;
   elements.generationTimeout.disabled = disabled;
 
   elements.maxRetries.disabled = disabled;

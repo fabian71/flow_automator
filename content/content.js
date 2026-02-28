@@ -27,6 +27,7 @@ const VIDEO_RESULT_SELECTOR = 'video[src*="storage.googleapis.com"], video[src*=
 // ===== State =====
 let isProcessing = false;
 let currentPromptText = '';
+let lastFlowDownloadDetectedAt = 0;
 
 // ===== Message Handler =====
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -47,6 +48,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else if (message.type === 'unpaused') {
         // Update overlay to show resumed state
         handleUnpaused();
+        sendResponse({ received: true });
+    } else if (message.type === 'flowDownloadDetected') {
+        lastFlowDownloadDetectedAt = Date.now();
+        console.log('[Flow Automator] Flow download detected by background:', message.filename || message.url || '');
         sendResponse({ received: true });
     }
     return true;
@@ -584,6 +589,7 @@ async function processPrompt(prompt, index, config, image = null) {
         const settingsConfig = {
             mode: mode,  // 'create-image' | 'text-to-video' | 'image-to-video'
             imageModel: config.imageModel || 'Nano Banana 2',
+            videoModel: config.videoModel || 'Veo 3.1 - Fast',
             modelKey: normalizeImageModelKey(config.imageModel || 'Nano Banana 2'),
             aspectRatio: (targetRatio === '9:16') ? 'portrait' : 'landscape'
         };
@@ -683,9 +689,8 @@ async function processPrompt(prompt, index, config, image = null) {
             if (config.mode === 'image') {
                 downloadSuccess = await downloadFromImageCard(cardResult.wrapper || cardResult.card, config.imageResolution || '2k');
             } else {
-                const canUpscale = config.aspectRatio !== '9:16';
-                const shouldUpscale = canUpscale && config.doUpscale;
-                downloadSuccess = await downloadFromVideoCard(cardResult.wrapper || cardResult.card, shouldUpscale);
+                const desiredVideoRes = normalizeVideoResolution(config.videoResolution || (config.doUpscale ? '1080p' : '720p'));
+                downloadSuccess = await downloadFromVideoCard(cardResult.wrapper || cardResult.card, desiredVideoRes);
             }
 
             if (!downloadSuccess) {
@@ -707,8 +712,9 @@ async function processPrompt(prompt, index, config, image = null) {
                 await sleep(2000);
             }
 
-            if (config.mode === 'video' && config.doUpscale && config.aspectRatio !== '9:16') {
-                updateOverlay('Aguardando upscale (1080p)...');
+            const targetVideoRes = normalizeVideoResolution(config.videoResolution || (config.doUpscale ? '1080p' : '720p'));
+            if (config.mode === 'video' && (targetVideoRes === '1080p' || targetVideoRes === '4k') && config.aspectRatio !== '9:16') {
+                updateOverlay('Aguardando upscale (' + targetVideoRes.toUpperCase() + ')...');
                 const upscaleComplete = await waitForUpscaleComplete(300000);
 
                 if (upscaleComplete) {
@@ -736,8 +742,8 @@ async function processPrompt(prompt, index, config, image = null) {
 
 
 // ===== Download video from a specific card =====
-async function downloadFromVideoCard(card, doUpscale) {
-    console.log('[Flow Automator] Starting VIDEO download, Upscale:', doUpscale);
+async function downloadFromVideoCard(card, targetResolution) {
+    console.log('[Flow Automator] Starting VIDEO download, target:', targetResolution);
 
     // Get video URL from card FIRST
     const video = card.querySelector('video');
@@ -753,90 +759,144 @@ async function downloadFromVideoCard(card, doUpscale) {
         });
     }
 
-    // Find download button within THIS card
-    const buttons = card.querySelectorAll('button');
-    let downloadBtn = null;
-
-    // Look for button with download icon
-    for (const btn of buttons) {
-        const icon = btn.querySelector('i');
-        if (icon && icon.textContent && icon.textContent.includes('download')) {
-            downloadBtn = btn;
-            break;
+    // Hover card/video to reveal 3-dot action menu
+    try {
+        card.scrollIntoView({ block: 'center' });
+        card.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+        card.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+        if (video) {
+            video.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+            video.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
         }
+    } catch (_) { }
+    await sleep(350);
+
+    const isVisible = (el) => {
+        if (!el || !el.isConnected) return false;
+        const style = window.getComputedStyle(el);
+        if (!style || style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 4 && r.height > 4;
+    };
+    const norm = (v) => String(v || '').toLowerCase().trim();
+    const iconText = (el) => norm(el?.querySelector('i')?.textContent);
+
+    const findMainMenuWithDownload = () => {
+        const menus = Array.from(document.querySelectorAll('[role="menu"]')).filter(isVisible);
+        return menus.find(m => {
+            const items = Array.from(m.querySelectorAll('[role="menuitem"]'));
+            return items.some(it => iconText(it).includes('download'));
+        }) || null;
+    };
+
+    // 1) Try opening via 3 dots first; if that fails, use right-click context menu fallback.
+    let mainMenu = null;
+    let moreBtn = Array.from(card.querySelectorAll('button')).find(b => {
+        if (!isVisible(b)) return false;
+        const iTxt = iconText(b);
+        const lbl = norm((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('data-tooltip') || ''));
+        return iTxt.includes('more_vert') || iTxt.includes('more_horiz') || lbl.includes('more') || lbl.includes('mais') || lbl.includes('menu');
+    });
+    if (!moreBtn) {
+        moreBtn = Array.from(card.querySelectorAll('[role="button"], button')).find(b => {
+            if (!isVisible(b)) return false;
+            const iTxt = iconText(b);
+            return iTxt.includes('more_vert') || iTxt.includes('more_horiz');
+        }) || null;
+    }
+    if (moreBtn) {
+        reactClick(moreBtn);
+        await sleep(500);
+        mainMenu = findMainMenuWithDownload();
     }
 
-    if (!downloadBtn) {
-        console.log('[Flow Automator] No download button found in video card');
+    if (!mainMenu) {
+        const target = video || card;
+        console.log('[Flow Automator] Three-dots menu not found, trying right-click context menu...');
+        rightClick(target);
+        await sleep(700);
+        mainMenu = findMainMenuWithDownload();
+    }
+
+    if (!mainMenu) {
+        console.log('[Flow Automator] Main context menu not found');
         return false;
     }
 
-    console.log('[Flow Automator] Clicking download button');
-    downloadBtn.click();
-    await sleep(1000); // Wait for menu to open
-
-    // Find menu items
-    let menuItems = document.querySelectorAll('[role="menuitem"]');
-    console.log('[Flow Automator] Found', menuItems.length, 'menu items');
-
-    // Retry if no menu items
-    if (menuItems.length === 0) {
-        await sleep(500);
-        menuItems = document.querySelectorAll('[role="menuitem"]');
-        console.log('[Flow Automator] Retry: Found', menuItems.length, 'menu items');
+    const downloadEntry = Array.from(mainMenu.querySelectorAll('[role="menuitem"]')).find(it => {
+        const txt = norm(it.textContent);
+        const iTxt = iconText(it);
+        const hasSub = it.getAttribute('aria-haspopup') === 'menu';
+        return iTxt.includes('download') || txt.includes('download') || txt.includes('baixar') || hasSub;
+    });
+    if (!downloadEntry) {
+        console.log('[Flow Automator] Download entry not found in context menu');
+        return false;
     }
 
-    if (menuItems.length === 0) {
-        console.log('[Flow Automator] No menu items - download may have started directly');
-        return true;
+    // 3) Open download submenu (hover + click, because Radix may require pointer intent)
+    downloadEntry.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    downloadEntry.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    reactClick(downloadEntry);
+    await sleep(500);
+
+    // 4) Find submenu with resolution options by numeric labels (language agnostic)
+    const parseResolution = (text) => {
+        const t = norm(text);
+        if (t.includes('4k')) return '4k';
+        if (t.includes('1080')) return '1080p';
+        if (t.includes('720')) return '720p';
+        if (t.includes('270')) return '270p';
+        return null;
+    };
+
+    const resMenu = Array.from(document.querySelectorAll('[role=\"menu\"]'))
+        .filter(isVisible)
+        .find(m => {
+            const items = Array.from(m.querySelectorAll('[role=\"menuitem\"]'));
+            return items.some(it => parseResolution(it.textContent));
+        });
+    if (!resMenu) {
+        console.log('[Flow Automator] Resolution submenu not found');
+        return false;
     }
 
-    // Simple logic: upscale = 1080p, no upscale = 720p
-    const searchText = doUpscale ? '1080' : '720';
-    console.log('[Flow Automator] Looking for:', searchText);
-
-    for (const item of menuItems) {
-        const itemText = item.textContent;
-        console.log('[Flow Automator] Menu item:', itemText);
-
-        if (itemText.includes(searchText)) {
-            console.log('[Flow Automator] Clicking:', itemText);
-            item.click();
-            await sleep(500);
-            return true;
-        }
+    const items = Array.from(resMenu.querySelectorAll('[role=\"menuitem\"]')).map(el => ({
+        el,
+        res: parseResolution(el.textContent),
+        disabled: el.getAttribute('aria-disabled') === 'true'
+    })).filter(x => x.res);
+    if (!items.length) {
+        console.log('[Flow Automator] No resolution options found');
+        return false;
     }
 
-    // Fallback: if looking for 1080 but not found (9:16 video), click 720
-    if (doUpscale) {
-        console.log('[Flow Automator] 1080p not available, trying 720p');
-        for (const item of menuItems) {
-            if (item.textContent.includes('720')) {
-                console.log('[Flow Automator] Clicking 720p fallback');
-                item.click();
-                await sleep(500);
-                return true;
-            }
-        }
+    const preferred = normalizeVideoResolution(targetResolution);
+    const fallbackOrder = preferred === '4k'
+        ? ['4k', '1080p', '720p', '270p']
+        : preferred === '1080p'
+            ? ['1080p', '720p', '270p']
+            : preferred === '720p'
+                ? ['720p', '270p']
+                : ['270p'];
+
+    let chosen = null;
+    for (const r of fallbackOrder) {
+        chosen = items.find(x => x.res === r && !x.disabled);
+        if (chosen) break;
+    }
+    if (!chosen) {
+        chosen = items.find(x => !x.disabled) || null;
+    }
+    if (!chosen) {
+        console.log('[Flow Automator] All resolution options are disabled');
+        return false;
     }
 
-    // Last fallback: click second item (usually the video option, not GIF)
-    if (menuItems.length >= 2) {
-        console.log('[Flow Automator] Clicking second menu item as fallback');
-        menuItems[1].click();
-        await sleep(500);
-        return true;
-    }
-
-    // Final fallback
-    if (menuItems.length >= 1) {
-        console.log('[Flow Automator] Clicking first menu item as final fallback');
-        menuItems[0].click();
-        await sleep(500);
-        return true;
-    }
-
-    return false;
+    console.log('[Flow Automator] Clicking video resolution:', chosen.res);
+    reactClick(chosen.el);
+    await sleep(500);
+    return true;
 }
 
 // ===== Download image from a specific card =====
@@ -1305,6 +1365,14 @@ function normalizeImageModelKey(modelValue) {
     return 'nb2';
 }
 
+function normalizeVideoResolution(value) {
+    const t = String(value || '').toLowerCase();
+    if (t.includes('4k')) return '4k';
+    if (t.includes('1080')) return '1080p';
+    if (t.includes('270')) return '270p';
+    return '720p';
+}
+
 console.log('[Flow Automator] Ready on:', window.location.href);
 
 
@@ -1409,9 +1477,16 @@ async function finishDownloadInEditView(resolution) {
 
 async function waitForUpscaleComplete(timeoutMs = 60000) {
     console.log('[Flow Automator] Aguardando conclusao do upscale...');
+    const baselineDownloadTs = lastFlowDownloadDetectedAt;
     const startTime = Date.now();
     await sleep(2000);
     while (Date.now() - startTime < timeoutMs) {
+        if (lastFlowDownloadDetectedAt > baselineDownloadTs) {
+            console.log('[Flow Automator] Download detectado via background. Encerrando espera de upscale.');
+            await sleep(1000);
+            return true;
+        }
+
         const toasts = Array.from(document.querySelectorAll('[data-sonner-toast]'));
         const upscaleToast = toasts.find(t => {
             const text = t.textContent.toLowerCase();

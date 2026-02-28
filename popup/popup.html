@@ -67,6 +67,28 @@
         </div>
       </div>
 
+      <!-- Video Model Selection (Only visible in video mode) -->
+      <div class="form-group" id="videoModelGroup" style="display: none;">
+        <label class="form-label">
+          <svg class="label-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M23 7l-7 5 7 5V7z"></path>
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+          </svg>
+          Modelo (Apenas Video):
+        </label>
+        <div class="select-wrapper">
+          <select id="videoModel" class="form-select">
+            <option value="Veo 3.1 - Fast">Veo 3.1 - Fast</option>
+            <option value="Veo 3.1 - Quality">Veo 3.1 - Quality</option>
+            <option value="Veo 2 - Fast">Veo 2 - Fast</option>
+            <option value="Veo 2 - Quality">Veo 2 - Quality</option>
+          </select>
+          <svg class="select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
+      </div>
+
       <!-- Video Duration (Visible only in Video mode) -->
       <div class="form-group" id="videoDurationGroup" style="display: none;">
         <label class="form-label">
@@ -212,6 +234,28 @@
             <span class="checkbox-custom"></span>
             <span class="checkbox-label">Fazer Upscale (1080p)</span>
           </label>
+        </div>
+
+        <!-- Video Resolution (only for videos) -->
+        <div class="form-group" id="videoResolutionGroup" style="display: none; margin-top: 4px;">
+          <label class="form-label">
+            <svg class="label-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+              <path d="M8 8h8v8H8z"></path>
+            </svg>
+            Resolucao do Video:
+          </label>
+          <div class="select-wrapper">
+            <select id="videoResolution" class="form-select">
+              <option value="270p">270p</option>
+              <option value="720p" selected>720p</option>
+              <option value="1080p">1080p</option>
+              <option value="4k">4K</option>
+            </select>
+            <svg class="select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+          </div>
         </div>
 
         <!-- Image Resolution (only for images) -->
