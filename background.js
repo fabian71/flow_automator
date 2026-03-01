@@ -602,6 +602,117 @@ function cleanupDownloadQueue() {
     }
 }
 
+const FLOW_HOME_URL = 'https://labs.google/fx/tools/flow';
+
+function isFlowToolsUrl(url) {
+    const u = String(url || '').toLowerCase();
+    return u.includes('labs.google/fx') && u.includes('/tools/flow');
+}
+
+function isFlowProjectUrl(url) {
+    const u = String(url || '').toLowerCase();
+    return isFlowToolsUrl(u) && u.includes('/project/');
+}
+
+function waitForTabUrl(tabId, predicate, timeoutMs = 60000) {
+    return new Promise((resolve, reject) => {
+        let finished = false;
+        const done = (ok, value) => {
+            if (finished) return;
+            finished = true;
+            clearTimeout(timer);
+            chrome.tabs.onUpdated.removeListener(onUpdated);
+            ok ? resolve(value) : reject(value);
+        };
+
+        const onUpdated = (updatedTabId, changeInfo, tab) => {
+            if (updatedTabId !== tabId) return;
+            if (changeInfo.status === 'complete' && predicate(tab?.url || '')) {
+                done(true, tab?.url || '');
+            }
+        };
+
+        const timer = setTimeout(() => done(false, new Error('Timeout waiting tab URL')), timeoutMs);
+        chrome.tabs.onUpdated.addListener(onUpdated);
+
+        chrome.tabs.get(tabId).then(tab => {
+            if (predicate(tab?.url || '')) done(true, tab?.url || '');
+        }).catch(() => { });
+    });
+}
+
+async function clickNewProjectButton(tabId) {
+    const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'MAIN',
+        func: () => {
+            const isVisible = (el) => {
+                if (!el || !el.isConnected) return false;
+                const st = window.getComputedStyle(el);
+                if (!st || st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return false;
+                const r = el.getBoundingClientRect();
+                return r.width > 8 && r.height > 8;
+            };
+
+            const clickHuman = (el) => {
+                const r = el.getBoundingClientRect();
+                const x = r.left + r.width / 2;
+                const y = r.top + r.height / 2;
+                const evt = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+                try { el.dispatchEvent(new PointerEvent('pointerdown', evt)); } catch (_) { }
+                el.dispatchEvent(new MouseEvent('mousedown', evt));
+                try { el.dispatchEvent(new PointerEvent('pointerup', evt)); } catch (_) { }
+                el.dispatchEvent(new MouseEvent('mouseup', evt));
+                el.dispatchEvent(new MouseEvent('click', evt));
+            };
+
+            const buttons = Array.from(document.querySelectorAll('button')).filter(isVisible);
+            const byIcon = buttons.find(btn => {
+                const icon = String(btn.querySelector('i')?.textContent || '').trim().toLowerCase();
+                return icon === 'add_2';
+            });
+
+            if (!byIcon) return { success: false, reason: 'new-project-button-not-found' };
+
+            clickHuman(byIcon);
+            try { byIcon.click(); } catch (_) { }
+            return { success: true };
+        }
+    });
+    return results?.[0]?.result?.success === true;
+}
+
+async function ensureFlowProjectReady(tabId) {
+    const current = await chrome.tabs.get(tabId);
+    const currentUrl = current?.url || '';
+
+    if (!isFlowProjectUrl(currentUrl)) {
+        if (!isFlowToolsUrl(currentUrl)) {
+            await chrome.tabs.update(tabId, { url: FLOW_HOME_URL });
+            await waitForTabUrl(tabId, isFlowToolsUrl, 60000);
+        } else {
+            await sleep(1000);
+        }
+
+        let opened = false;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            const clicked = await clickNewProjectButton(tabId);
+            if (clicked) {
+                try {
+                    await waitForTabUrl(tabId, isFlowProjectUrl, 60000);
+                    opened = true;
+                    break;
+                } catch (_) { }
+            }
+            await sleep(1200);
+        }
+
+        if (!opened) {
+            throw new Error('Nao foi possivel abrir Novo projeto automaticamente.');
+        }
+    }
+}
+
 async function startAutomation(config) {
     automationState = {
         isProcessing: true,
@@ -615,6 +726,16 @@ async function startAutomation(config) {
         pauseEndTime: null,
         processedSinceLastPause: 0
     };
+
+    try {
+        await ensureFlowProjectReady(config.tabId);
+    } catch (e) {
+        console.error('[BG] Failed to prepare Flow project:', e?.message || e);
+        automationState.isProcessing = false;
+        await chrome.storage.local.set({ isProcessing: false });
+        broadcastMessage({ type: 'error', error: e?.message || 'Falha ao abrir projeto no Flow' });
+        return;
+    }
 
     const imageCount = config.imageCount || (config.images ? config.images.length : 0);
     const totalItems = imageCount > 0 ? imageCount : config.prompts.length;

@@ -712,8 +712,8 @@ async function startAutomation() {
   // Get active tab
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-  if (!tab || !(tab.url.includes('labs.google/fx') && tab.url.includes('/tools/flow'))) {
-    alert('Por favor, abra o Google Flow antes de iniciar a automação.\n\nhttps://labs.google/fx/tools/flow');
+  if (!tab || !tab.id) {
+    alert('Nao foi possivel identificar a aba ativa.');
     return;
   }
 
@@ -879,3 +879,4 @@ function handleError(error) {
   hideProcessingUI();
   isProcessing = false;
 }
+

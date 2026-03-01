@@ -2,7 +2,7 @@
     "manifest_version": 3,
     "name": "Flow Automator",
     "description": "Automatiza a geração de vídeos e imagens no Google Flow com lista de prompts",
-    "version": "3.0",
+    "version": "4.0",
     "permissions": [
         "activeTab",
         "storage",
