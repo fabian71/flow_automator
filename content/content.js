@@ -12,7 +12,9 @@ const SELECTORS = {
     PROMPT_POLICY_ERROR_POPUP_XPATH: "//li[@data-sonner-toast and .//i[normalize-space(text())='error'] and not(.//*[contains(., '5')])]",
     START_IMAGE_ADD_BUTTON_XPATH: "//button[.//i[text()='add'] or .//svg]",
     HIDDEN_FILE_INPUT_XPATH: '//input[@type="file"]',
-    UPLOAD_SPINNER_XPATH: "//i[contains(text(), 'progress_activity')]"
+    UPLOAD_SPINNER_XPATH: "//i[contains(text(), 'progress_activity')]",
+    OPEN_MEDIA_DIALOG_XPATH: "//div[@role='dialog' and @data-state='open']",
+    MEDIA_DIALOG_UPLOAD_BUTTON_XPATH: "//div[@role='dialog' and @data-state='open']//button[.//i[normalize-space(text())='upload']]"
 };
 
 const IMAGE_DOWNLOAD_OPTIONS = {
@@ -269,37 +271,223 @@ async function openSettingsPopover() {
 
 // ===== Helper: Upload Image (Robust) =====
 async function uploadImage(dataUrl, fileName, fileType, cropMode = 'landscape') {
-    let fileInput = null;
-    let retries = 10;
-    while (retries > 0) {
-        const snapshot = document.evaluate(SELECTORS.HIDDEN_FILE_INPUT_XPATH, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-        if (snapshot.snapshotLength > 0) {
-            fileInput = snapshot.snapshotItem(snapshot.snapshotLength - 1);
-            break;
+    const norm = (v) => String(v || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const isVisible = (el) => {
+        if (!el || !el.isConnected) return false;
+        const style = window.getComputedStyle(el);
+        if (!style || style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 4 && r.height > 4;
+    };
+
+    const listFileInputs = () => {
+        const snapshot = document.evaluate(
+            SELECTORS.HIDDEN_FILE_INPUT_XPATH,
+            document,
+            null,
+            XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+            null
+        );
+        const out = [];
+        for (let i = 0; i < snapshot.snapshotLength; i++) out.push(snapshot.snapshotItem(i));
+        return out.filter(Boolean);
+    };
+
+    const waitForNewFileInput = async (beforeSet, timeoutMs = 6000) => {
+        let left = timeoutMs;
+        while (left > 0) {
+            const now = listFileInputs();
+            const fresh = now.find(el => !beforeSet.has(el));
+            if (fresh) return fresh;
+            await sleep(200);
+            left -= 200;
         }
-        await sleep(250);
-        retries--;
-    }
+        return null;
+    };
 
-    if (!fileInput) {
-        console.log("No file input found, trying to click add icon first...");
-        const btnAdd = await waitForElementByXPath(SELECTORS.START_IMAGE_ADD_BUTTON_XPATH, 2000);
-        if (btnAdd) btnAdd.click();
-        await sleep(1000);
-        const snapshot = document.evaluate(SELECTORS.HIDDEN_FILE_INPUT_XPATH, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-        if (snapshot.snapshotLength > 0) fileInput = snapshot.snapshotItem(snapshot.snapshotLength - 1);
-    }
+    const waitForOpenMediaDialog = async (timeoutMs = 3500) => {
+        let left = timeoutMs;
+        while (left > 0) {
+            const dlg = document.evaluate(
+                SELECTORS.OPEN_MEDIA_DIALOG_XPATH,
+                document,
+                null,
+                XPathResult.FIRST_ORDERED_NODE_TYPE,
+                null
+            ).singleNodeValue;
+            if (dlg && isVisible(dlg)) return dlg;
+            await sleep(150);
+            left -= 150;
+        }
+        return null;
+    };
 
-    if (!fileInput) return false;
+    const getOpenMediaDialog = () => {
+        return document.evaluate(
+            SELECTORS.OPEN_MEDIA_DIALOG_XPATH,
+            document,
+            null,
+            XPathResult.FIRST_ORDERED_NODE_TYPE,
+            null
+        ).singleNodeValue;
+    };
+
+    const countSlotImages = () => {
+        return document.querySelectorAll('button[data-card-open] img[src], button[data-card-open] [style*="background-image"]').length;
+    };
+
+    const waitForInitialSlotFilled = async (beforeCount, timeoutMs = 12000) => {
+        let left = timeoutMs;
+        while (left > 0) {
+            const afterCount = countSlotImages();
+            if (afterCount > beforeCount) return true;
+            await sleep(250);
+            left -= 250;
+        }
+        return false;
+    };
+
+    const clickElementSafe = async (el) => {
+        if (!el) return false;
+        try {
+            reactClick(el);
+            await sleep(220);
+            return true;
+        } catch (_) {
+            try {
+                el.click();
+                await sleep(220);
+                return true;
+            } catch (_e) {
+                return false;
+            }
+        }
+    };
+
+    const selectInitialSlot = async () => {
+        const candidates = Array.from(document.querySelectorAll("[aria-haspopup='dialog'], [type='button'][aria-haspopup='dialog']"))
+            .filter(isVisible);
+
+        const initialBtn = candidates.find(el => {
+            const t = norm(el.textContent);
+            return t === 'inicial' || t === 'initial' || t.startsWith('inicial ') || t.startsWith('initial ') || t.includes(' inicial') || t.includes(' initial');
+        });
+
+        if (initialBtn) return clickElementSafe(initialBtn);
+        return false;
+    };
+
+    const clickUploadInsideMediaDialog = async () => {
+        const btnByXpath = document.evaluate(
+            SELECTORS.MEDIA_DIALOG_UPLOAD_BUTTON_XPATH,
+            document,
+            null,
+            XPathResult.FIRST_ORDERED_NODE_TYPE,
+            null
+        ).singleNodeValue;
+        if (btnByXpath && isVisible(btnByXpath)) {
+            return clickElementSafe(btnByXpath);
+        }
+
+        const dialog = document.evaluate(
+            SELECTORS.OPEN_MEDIA_DIALOG_XPATH,
+            document,
+            null,
+            XPathResult.FIRST_ORDERED_NODE_TYPE,
+            null
+        ).singleNodeValue;
+        if (!dialog) return false;
+
+        const buttons = Array.from(dialog.querySelectorAll('button')).filter(isVisible);
+        const byIcon = buttons.find(b => {
+            const icon = norm(b.querySelector('i')?.textContent || '');
+            return icon === 'upload';
+        });
+        if (byIcon) return clickElementSafe(byIcon);
+
+        return false;
+    };
+
+    const setFileOnInput = (inputEl, file) => {
+        try {
+            const dt = new DataTransfer();
+            dt.items.add(file);
+            inputEl.files = dt.files;
+            inputEl.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+            inputEl.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+            return true;
+        } catch (e) {
+            console.warn('[Flow Automator] setFileOnInput failed:', e?.message || e);
+            return false;
+        }
+    };
+
+    const buildUploadInputCandidates = (beforeSet) => {
+        const dialog = getOpenMediaDialog();
+        const freshInputs = listFileInputs().filter(el => !beforeSet.has(el));
+        const dialogInputs = dialog
+            ? Array.from(dialog.querySelectorAll('input[type="file"]'))
+            : [];
+        const allInputs = listFileInputs();
+
+        const merged = [];
+        const pushUnique = (el) => {
+            if (!el) return;
+            if (merged.includes(el)) return;
+            if (el.disabled) return;
+            merged.push(el);
+        };
+
+        // Priority: input inside open dialog, then fresh inputs, then any existing file input.
+        dialogInputs.forEach(pushUnique);
+        freshInputs.forEach(pushUnique);
+        allInputs.forEach(pushUnique);
+        return merged;
+    };
+
+    const beforeInputs = new Set(listFileInputs());
+    const slotImageCountBefore = countSlotImages();
+
+    // Flow required by current UI: click "Initial/Inicial" -> open dialog -> click "upload" button.
+    const initialClicked = await selectInitialSlot();
+    if (initialClicked) {
+        await waitForOpenMediaDialog(3500);
+        await clickUploadInsideMediaDialog();
+    }
 
     // Inject File
     const res = await fetch(dataUrl);
     const blob = await res.blob();
     const file = new File([blob], fileName, { type: fileType });
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    fileInput.files = dt.files;
-    fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+    let fileInjected = false;
+    let candidateInputs = buildUploadInputCandidates(beforeInputs);
+    if (candidateInputs.length === 0) {
+        // Fallback to legacy "add" button flow used by reference extension.
+        console.log("No input candidates after Initial dialog, trying add button...");
+        const btnAdd = await waitForElementByXPath(SELECTORS.START_IMAGE_ADD_BUTTON_XPATH, 2500);
+        if (btnAdd) await clickElementSafe(btnAdd);
+        await waitForNewFileInput(beforeInputs, 3000);
+        candidateInputs = buildUploadInputCandidates(beforeInputs);
+    }
+
+    for (const inputEl of candidateInputs) {
+        if (!setFileOnInput(inputEl, file)) continue;
+        fileInjected = true;
+        await sleep(200);
+        break;
+    }
+
+    if (!fileInjected) {
+        console.warn('[Flow Automator] Could not inject file into any input[type=file] candidate.');
+        return false;
+    }
 
     // Wait for Spinner
     let spinner = await waitForElementByXPath(SELECTORS.UPLOAD_SPINNER_XPATH, 2000);
@@ -314,6 +502,13 @@ async function uploadImage(dataUrl, fileName, fileType, cropMode = 'landscape') 
         if (maxWait <= 0) return false;
     } else {
         await sleep(2000);
+    }
+
+    // Explicitly wait until the "Initial" slot receives the uploaded image preview.
+    const slotFilled = await waitForInitialSlotFilled(slotImageCountBefore, 12000);
+    if (!slotFilled) {
+        console.warn('[Flow Automator] Upload finished but Initial slot was not confirmed as filled in time.');
+        return false;
     }
     return true;
 }
@@ -543,6 +738,54 @@ function findLatestDownloadableCard(mode) {
     return sorted[0] || null;
 }
 
+async function clickDismissButton() {
+    try {
+        const isVisible = (el) => {
+            if (!el || !el.isConnected) return false;
+            const st = window.getComputedStyle(el);
+            if (!st || st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 4 && r.height > 4;
+        };
+
+        const norm = (v) => String(v || '').toLowerCase().trim();
+        const candidates = Array.from(document.querySelectorAll('button,[role="button"]')).filter(isVisible);
+
+        const btn = candidates.find((el) => {
+            const txt = norm(el.textContent);
+            const aria = norm(el.getAttribute('aria-label'));
+            const title = norm(el.getAttribute('title'));
+            const icon = norm(el.querySelector('i')?.textContent);
+            return (
+                icon === 'close' ||
+                icon === 'cancel' ||
+                txt.includes('fechar') ||
+                txt.includes('close') ||
+                txt.includes('dispens') ||
+                aria.includes('fechar') ||
+                aria.includes('close') ||
+                title.includes('fechar') ||
+                title.includes('close')
+            );
+        });
+
+        if (btn) {
+            reactClick(btn);
+            await sleep(250);
+            return true;
+        }
+    } catch (_) { }
+
+    try {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true }));
+        document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true }));
+        await sleep(200);
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
 // ===== Main Processing Function (Replaces earlier implementation) =====
 async function processPrompt(prompt, index, config, image = null) {
     console.log('[Flow Automator] Processing prompt via temp logic:', prompt);
@@ -571,7 +814,20 @@ async function processPrompt(prompt, index, config, image = null) {
         }
 
 
-        // 2. Select Mode, Model, Ratio (all in MAIN world via mainWorldSelectSettings)
+        // 2. If image-to-video with source image, upload FIRST (requested flow).
+        if (mode === 'image-to-video' && image) {
+            updateOverlay('Enviando imagem (Inicial)...');
+            const uploadSuccess = await uploadImage(
+                image.data,
+                image.name,
+                image.type,
+                image.aspectRatio === '9:16' ? 'portrait' : 'landscape'
+            );
+            if (!uploadSuccess) throw new Error('Falha no upload da imagem');
+            await sleep(700);
+        }
+
+        // 3. Select Mode, Model, Ratio (all in MAIN world via mainWorldSelectSettings)
         updateOverlay('Configurando modo/modelo/proporcao...');
 
         // Determine aspect ratio for this prompt
@@ -614,14 +870,6 @@ async function processPrompt(prompt, index, config, image = null) {
             await setVideoDuration(config.videoDuration);
         }
 
-
-        // 3. Upload Image (if applicable)
-        if (mode === 'image-to-video' && image) {
-            updateOverlay('Enviando imagem...');
-            const uploadSuccess = await uploadImage(image.data, image.name, image.type, image.aspectRatio === '9:16' ? 'portrait' : 'landscape');
-            if (!uploadSuccess) throw new Error('Falha no upload da imagem');
-            await sleep(1000);
-        }
 
         // 4. Input Prompt
         updateOverlay('Inserindo prompt...');
