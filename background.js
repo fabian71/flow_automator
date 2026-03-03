@@ -789,9 +789,13 @@ async function processNextPrompt() {
         return;
     }
 
-    const prompt = prompts.length > 0
+    let prompt = prompts.length > 0
         ? prompts[automationState.currentIndex % prompts.length]
         : '';
+    prompt = String(prompt || '').trim();
+    if (!prompt) {
+        prompt = 'Animate this image with natural cinematic motion, preserving subject identity and scene details.';
+    }
 
     // Get current image from storage (chunked) or config (legacy)
     let currentImage = null;

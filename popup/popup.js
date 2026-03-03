@@ -691,8 +691,10 @@ async function startAutomation() {
   // Validation: Must have at least one prompt OR one image (if image-to-video mode)
   const isVideoMode = elements.generationMode.value === 'video';
   const hasImages = selectedImages.length > 0;
+  const fallbackImagePrompt = 'Animate this image with natural cinematic motion, preserving subject identity and scene details.';
+  const effectivePrompts = (isVideoMode && hasImages && prompts.length === 0) ? [fallbackImagePrompt] : prompts;
 
-  if (prompts.length === 0 && (!isVideoMode || !hasImages)) {
+  if (effectivePrompts.length === 0) {
     alert('Por favor, adicione pelo menos um prompt' + (isVideoMode ? ' ou uma imagem.' : '.'));
     return;
   }
@@ -752,7 +754,7 @@ async function startAutomation() {
     type: 'start',
     config: {
       tabId: tab.id,
-      prompts: prompts,
+      prompts: effectivePrompts,
       images: [], // Empty array to avoid message size limit
       imageCount: processedImages.length, // Send count instead
       usingStorageImages: true, // Flag to tell BG to read from storage

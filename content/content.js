@@ -229,6 +229,36 @@ async function fillPromptInput(promptText) {
     });
 }
 
+function normalizePromptText(value) {
+    return String(value || '')
+        .replace(/[\u200B-\u200D\uFEFF]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function isPromptApplied(promptText) {
+    const input = document.evaluate(SELECTORS.PROMPT_TEXTAREA_XPATH, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+    if (!input) return false;
+
+    const expected = normalizePromptText(promptText);
+    const actual = normalizePromptText(input.innerText || input.textContent || input.value || '');
+    if (!expected) return actual.length > 0;
+    if (actual.includes(expected)) return true;
+
+    // Accept partial match for long prompts when editor normalizes punctuation/spaces.
+    return expected.length > 24 && actual.includes(expected.slice(0, 24));
+}
+
+async function ensurePromptInput(promptText, maxAttempts = 3) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const ok = await fillPromptInput(promptText);
+        await sleep(500);
+        if (ok && isPromptApplied(promptText)) return true;
+        console.warn(`[Flow Automator] Prompt not confirmed in editor (attempt ${attempt}/${maxAttempts})`);
+    }
+    return false;
+}
+
 
 // ===== Settings Selection (all in MAIN world via background.js) =====
 // Uses afHumanClick (with clientX/clientY) - confirmed working approach from reference extension.
@@ -788,12 +818,14 @@ async function clickDismissButton() {
 
 // ===== Main Processing Function (Replaces earlier implementation) =====
 async function processPrompt(prompt, index, config, image = null) {
-    console.log('[Flow Automator] Processing prompt via temp logic:', prompt);
+    const fallbackPrompt = 'Animate this image with natural cinematic motion, preserving subject identity and scene details.';
+    const effectivePrompt = String(prompt || '').trim() || fallbackPrompt;
+    console.log('[Flow Automator] Processing prompt via temp logic:', effectivePrompt);
     isProcessing = true;
-    currentPromptText = prompt.trim();
+    currentPromptText = effectivePrompt;
 
     try {
-        showOverlay('Processando...', prompt);
+        showOverlay('Processando...', effectivePrompt);
         setStatusProgress(index + 1, config.totalPrompts || 1);
 
         // Improved Page Ready Wait: Wait for history to likely load
@@ -873,8 +905,8 @@ async function processPrompt(prompt, index, config, image = null) {
 
         // 4. Input Prompt
         updateOverlay('Inserindo prompt...');
-        const inputSuccess = await fillPromptInput(prompt);
-        if (!inputSuccess) throw new Error('Nao foi possivel encontrar o campo de prompt');
+        const inputSuccess = await ensurePromptInput(effectivePrompt, 3);
+        if (!inputSuccess) throw new Error('Falha ao inserir prompt (campo permaneceu vazio)');
         await sleep(2000);
 
         // 5. Click Generate
@@ -972,7 +1004,7 @@ async function processPrompt(prompt, index, config, image = null) {
             }
 
             console.log('[Flow Automator] Prompt completed successfully');
-            sendComplete(true, null, prompt);
+            sendComplete(true, null, effectivePrompt);
 
         } else {
             console.error("Generate button not found or disabled");
@@ -982,7 +1014,7 @@ async function processPrompt(prompt, index, config, image = null) {
         console.error('[Flow Automator] Error processing prompt:', e);
         updateOverlay('Erro: ' + e.message);
         await sleep(3000); // Give user time to see error
-        sendComplete(false, null, prompt, e.message);
+        sendComplete(false, null, effectivePrompt, e.message);
     } finally {
         isProcessing = false;
     }
