@@ -387,7 +387,7 @@ async function mainWorldSelectSettings(tabId, config) {
                         const wantPortrait = cfg.aspectRatio === 'portrait';
                         const wantModel = isImage
                             ? normText(cfg.imageModel || 'nano banana 2')
-                            : normText(cfg.videoModel || 'veo 3.1 - fast');
+                            : normText(cfg.videoModel || 'veo 3.1 - fast [lower priority]');
 
                         // 4) Mode
                         const modeTab =
@@ -476,7 +476,7 @@ async function mainWorldSelectSettings(tabId, config) {
 
                             let items = Array.from(modelMenu.querySelectorAll("[role='menuitem'], [role='menuitemradio'], [role='option'], button"));
 
-                            const scoreItem = (itemEl) => {
+                            const scoreItem = (itemEl, modelToMatch) => {
                                 const t = normText(itemEl.textContent);
                                 if (!t) return -1;
 
@@ -490,10 +490,11 @@ async function mainWorldSelectSettings(tabId, config) {
                                     return 0;
                                 } else {
                                     // Video logic: fuzzy matching
-                                    if (t === wantModel) return 100;
-                                    if (t.includes(wantModel) || wantModel.includes(t)) return 80;
+                                    const target = modelToMatch || wantModel;
+                                    if (t === target) return 100;
+                                    if (t.includes(target) || target.includes(t)) return 80;
                                     // Split and match parts (e.g., "veo 2" and "fast")
-                                    const parts = wantModel.split(/[\s-]+/);
+                                    const parts = target.split(/[\s-]+/).filter(p => p !== 'lower' && p !== 'priority' && !p.includes('[') && !p.includes(']'));
                                     const matches = parts.filter(p => p.length > 1 && t.includes(p)).length;
                                     return matches * 20;
                                 }
@@ -502,10 +503,22 @@ async function mainWorldSelectSettings(tabId, config) {
                             let bestItem = null;
                             let bestScore = -1;
                             for (const item of items) {
-                                const s = scoreItem(item);
+                                const s = scoreItem(item, wantModel);
                                 if (s > bestScore) {
                                     bestScore = s;
                                     bestItem = item;
+                                }
+                            }
+
+                            // Fallback: se for 'lower priority' e não encontrou item com score bom, tenta sem o suffix
+                            if ((!bestItem || bestScore <= 0) && !isImage && wantModel.includes('[lower priority]')) {
+                                const fallbackModel = wantModel.replace(/\s*\[lower priority\]/i, '').trim();
+                                log('Modelo [Lower Priority] nao encontrado, tentando fallback:', fallbackModel);
+                                bestItem = null;
+                                bestScore = -1;
+                                for (const item of items) {
+                                    const s = scoreItem(item, fallbackModel);
+                                    if (s > bestScore) { bestScore = s; bestItem = item; }
                                 }
                             }
 

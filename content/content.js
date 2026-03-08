@@ -30,6 +30,93 @@ const VIDEO_RESULT_SELECTOR = 'video[src*="storage.googleapis.com"], video[src*=
 let isProcessing = false;
 let currentPromptText = '';
 let lastFlowDownloadDetectedAt = 0;
+let dashboardSetupDone = false;
+
+// ===== Dashboard Setup (runs once before first prompt) =====
+async function initDashboardSetup() {
+    if (dashboardSetupDone) return;
+    dashboardSetupDone = true;
+    console.log('[Flow Automator] Running one-time dashboard setup...');
+
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const isVisible = (el) => {
+        if (!el || !el.isConnected) return false;
+        const st = window.getComputedStyle(el);
+        if (!st || st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 2 && r.height > 2;
+    };
+    const humanClick = (el) => {
+        if (!el) return;
+        try {
+            const rect = el.getBoundingClientRect();
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            const common = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+            try { el.dispatchEvent(new PointerEvent('pointerdown', common)); } catch (_) { }
+            el.dispatchEvent(new MouseEvent('mousedown', common));
+            try { el.dispatchEvent(new PointerEvent('pointerup', common)); } catch (_) { }
+            el.dispatchEvent(new MouseEvent('mouseup', common));
+            el.dispatchEvent(new MouseEvent('click', common));
+        } catch (_) { try { el.click(); } catch (_) { } }
+    };
+
+    try {
+        // Step 1: Click the "View full dashboard" button (icon: dashboard)
+        const allButtons = Array.from(document.querySelectorAll('button'));
+        const dashboardBtn = allButtons.find(b => {
+            const icon = b.querySelector('i');
+            return icon && icon.textContent.trim() === 'dashboard' && isVisible(b);
+        });
+        if (dashboardBtn) {
+            console.log('[Flow Automator] Clicking dashboard button...');
+            humanClick(dashboardBtn);
+            await sleep(800);
+        } else {
+            console.warn('[Flow Automator] Dashboard button not found, skipping.');
+        }
+
+        // Step 2: Click the grid settings button (icon: settings_2)
+        const settingsBtn = Array.from(document.querySelectorAll('button')).find(b => {
+            const icon = b.querySelector('i');
+            return icon && icon.textContent.trim() === 'settings_2' && isVisible(b);
+        });
+        if (!settingsBtn) {
+            console.warn('[Flow Automator] Settings_2 button not found, skipping.');
+            return;
+        }
+        console.log('[Flow Automator] Clicking settings_2 button...');
+        humanClick(settingsBtn);
+        await sleep(800);
+
+        // Step 3: Wait for the dropdown menu and click the 'Grid' tab
+        let gridTab = null;
+        for (let i = 0; i < 20; i++) {
+            gridTab = Array.from(document.querySelectorAll('[role="tab"]')).find(b => {
+                const label = (b.getAttribute('aria-label') || '').toLowerCase();
+                const icon = b.querySelector('i');
+                const iconText = icon ? icon.textContent.trim() : '';
+                return (label === 'grid' || b.textContent.trim().toLowerCase().startsWith('grid')) && iconText === 'dashboard' && isVisible(b);
+            });
+            if (gridTab) break;
+            await sleep(150);
+        }
+        if (gridTab) {
+            console.log('[Flow Automator] Clicking Grid tab...');
+            humanClick(gridTab);
+            await sleep(400);
+            // Close the menu with Escape
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+            await sleep(300);
+        } else {
+            console.warn('[Flow Automator] Grid tab not found in menu.');
+        }
+
+        console.log('[Flow Automator] Dashboard setup complete.');
+    } catch (e) {
+        console.warn('[Flow Automator] initDashboardSetup error:', e.message);
+    }
+}
 
 // ===== Message Handler =====
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -828,6 +915,12 @@ async function processPrompt(prompt, index, config, image = null) {
         showOverlay('Processando...', effectivePrompt);
         setStatusProgress(index + 1, config.totalPrompts || 1);
 
+        // One-time dashboard setup before the very first prompt
+        if (index === 0) {
+            updateOverlay('Configurando dashboard...');
+            await initDashboardSetup();
+        }
+
         // Improved Page Ready Wait: Wait for history to likely load
         await waitForPageReady();
         // Scan existing URLs to avoid "History Loaded Late" race condition
@@ -877,7 +970,7 @@ async function processPrompt(prompt, index, config, image = null) {
         const settingsConfig = {
             mode: mode,  // 'create-image' | 'text-to-video' | 'image-to-video'
             imageModel: config.imageModel || 'Nano Banana 2',
-            videoModel: config.videoModel || 'Veo 3.1 - Fast',
+            videoModel: config.videoModel || 'Veo 3.1 - Fast [Lower Priority]',
             modelKey: normalizeImageModelKey(config.imageModel || 'Nano Banana 2'),
             aspectRatio: (targetRatio === '9:16') ? 'portrait' : 'landscape'
         };
@@ -1039,17 +1132,11 @@ async function downloadFromVideoCard(card, targetResolution) {
         });
     }
 
-    // Hover card/video to reveal 3-dot action menu
-    try {
-        card.scrollIntoView({ block: 'center' });
-        card.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-        card.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-        if (video) {
-            video.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-            video.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-        }
-    } catch (_) { }
-    await sleep(350);
+    // CSS :hover cannot be triggered by JS events.
+    // Strategy: inject a temporary <style> that forces child buttons visible on this card,
+    // find the 3-dot button, click it, then remove the injected style.
+    card.scrollIntoView({ block: 'center' });
+    await sleep(300);
 
     const isVisible = (el) => {
         if (!el || !el.isConnected) return false;
@@ -1061,6 +1148,18 @@ async function downloadFromVideoCard(card, targetResolution) {
     const norm = (v) => String(v || '').toLowerCase().trim();
     const iconText = (el) => norm(el?.querySelector('i')?.textContent);
 
+    const findMoreBtn = (container = document.body) => {
+        return Array.from(container.querySelectorAll('button, [role="button"]')).find(b => {
+            const iTxt = iconText(b);
+            const lbl = norm((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('data-tooltip') || ''));
+            const inCard = card.contains(b) || container === card;
+            // Accept even hidden buttons that belong to this card
+            if (!inCard && !isVisible(b)) return false;
+            return iTxt.includes('more_vert') || iTxt.includes('more_horiz') ||
+                lbl.includes('more') || lbl.includes('mais') || lbl.includes('menu');
+        });
+    };
+
     const findMainMenuWithDownload = () => {
         const menus = Array.from(document.querySelectorAll('[role="menu"]')).filter(isVisible);
         return menus.find(m => {
@@ -1069,34 +1168,79 @@ async function downloadFromVideoCard(card, targetResolution) {
         }) || null;
     };
 
-    // 1) Try opening via 3 dots first; if that fails, use right-click context menu fallback.
+    // 1) CSS injection approach: force card's overlay buttons visible, click 3-dots
     let mainMenu = null;
-    let moreBtn = Array.from(card.querySelectorAll('button')).find(b => {
-        if (!isVisible(b)) return false;
-        const iTxt = iconText(b);
-        const lbl = norm((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('data-tooltip') || ''));
-        return iTxt.includes('more_vert') || iTxt.includes('more_horiz') || lbl.includes('more') || lbl.includes('mais') || lbl.includes('menu');
-    });
-    if (!moreBtn) {
-        moreBtn = Array.from(card.querySelectorAll('[role="button"], button')).find(b => {
-            if (!isVisible(b)) return false;
-            const iTxt = iconText(b);
-            return iTxt.includes('more_vert') || iTxt.includes('more_horiz');
-        }) || null;
-    }
+    const injectStyle = () => {
+        const s = document.createElement('style');
+        s.id = '__flow_hover_fix__';
+        // Make all buttons/overlays inside card visible regardless of hover state
+        s.textContent = `
+            [data-flow-target-card] button,
+            [data-flow-target-card] [role="button"],
+            [data-flow-target-card] [class*="overlay"],
+            [data-flow-target-card] [class*="action"],
+            [data-flow-target-card] [class*="menu"] {
+                opacity: 1 !important;
+                visibility: visible !important;
+                pointer-events: auto !important;
+            }
+        `;
+        document.head.appendChild(s);
+    };
+    const removeStyle = () => {
+        const s = document.getElementById('__flow_hover_fix__');
+        if (s) s.remove();
+    };
+
+    // Tag the card temporarily so CSS targets it
+    card.setAttribute('data-flow-target-card', '1');
+    injectStyle();
+    await sleep(300);
+
+    const moreBtn = findMoreBtn(card) || findMoreBtn(document.body);
     if (moreBtn) {
+        console.log('[Flow Automator] Found 3-dots button via CSS injection, clicking...');
         reactClick(moreBtn);
+        await sleep(600);
+        mainMenu = findMainMenuWithDownload();
+    } else {
+        console.log('[Flow Automator] 3-dots button not found even with CSS injection');
+    }
+
+    // Always clean up
+    removeStyle();
+    card.removeAttribute('data-flow-target-card');
+
+    // 2) Fallback: hover events
+    if (!mainMenu) {
+        console.log('[Flow Automator] Trying hover events fallback...');
+        for (const el of [card, video].filter(Boolean)) {
+            try {
+                const rect = el.getBoundingClientRect();
+                const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+                el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: cx, clientY: cy }));
+                el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: cx, clientY: cy }));
+                el.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: cx, clientY: cy }));
+            } catch (_) { }
+        }
         await sleep(500);
+        const moreBtnHover = findMoreBtn(card) || findMoreBtn(document.body);
+        if (moreBtnHover) {
+            reactClick(moreBtnHover);
+            await sleep(600);
+            mainMenu = findMainMenuWithDownload();
+        }
+    }
+
+    // 3) Final fallback: right-click context menu
+    if (!mainMenu) {
+        const target = video || card;
+        console.log('[Flow Automator] Trying right-click context menu as final fallback...');
+        rightClick(target);
+        await sleep(800);
         mainMenu = findMainMenuWithDownload();
     }
 
-    if (!mainMenu) {
-        const target = video || card;
-        console.log('[Flow Automator] Three-dots menu not found, trying right-click context menu...');
-        rightClick(target);
-        await sleep(700);
-        mainMenu = findMainMenuWithDownload();
-    }
 
     if (!mainMenu) {
         console.log('[Flow Automator] Main context menu not found');

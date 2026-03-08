@@ -14,7 +14,7 @@
     <!-- Header -->
     <header class="header">
       <div class="logo">
-        <div class="logo-icon">
+        <div class="logo-icon" id="logoIcon" style="cursor: pointer; user-select: none;">
           <span class="logo-text">Flow</span>
         </div>
         <h1>Flow Automator</h1>
@@ -58,7 +58,7 @@
         <div class="select-wrapper">
           <select id="imageModel" class="form-select">
             <option value="Nano Banana Pro">Nano Banana Pro</option>
-            <option value="Nano Banana 2">Nano Banana 2</option>
+            <option value="Nano Banana 2" selected>Nano Banana 2</option>
             <option value="Imagen 4">Imagen 4</option>
           </select>
           <svg class="select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -76,8 +76,9 @@
           </svg>
           Modelo (Apenas Video):
         </label>
-        <div class="select-wrapper">
-          <select id="videoModel" class="form-select">
+        <div class="select-wrapper" style="opacity: 0.5;" id="videoModelWrapper">
+          <select id="videoModel" class="form-select" disabled>
+            <option value="Veo 3.1 - Fast [Lower Priority]" selected>Veo 3.1 - Fast [Lower Priority]</option>
             <option value="Veo 3.1 - Fast">Veo 3.1 - Fast</option>
             <option value="Veo 3.1 - Quality">Veo 3.1 - Quality</option>
             <option value="Veo 2 - Fast">Veo 2 - Fast</option>
@@ -250,7 +251,6 @@
               <option value="270p">270p</option>
               <option value="720p" selected>720p</option>
               <option value="1080p">1080p</option>
-              <option value="4k">4K</option>
             </select>
             <svg class="select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="6 9 12 15 18 9"></polyline>
@@ -272,7 +272,6 @@
             <select id="imageResolution" class="form-select">
               <option value="1k">1K</option>
               <option value="2k" selected>2K</option>
-              <option value="4k">4K</option>
             </select>
             <svg class="select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="6 9 12 15 18 9"></polyline>
@@ -313,7 +312,7 @@
       </div>
 
       <!-- Scheduled Pause Section -->
-      <div class="form-group"
+      <div id="scheduledPauseSection" class="form-group"
         style="margin-top: 20px; padding: 14px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md);">
         <label class="checkbox-wrapper">
           <input type="checkbox" id="scheduledPauseEnabled">

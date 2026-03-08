@@ -36,6 +36,7 @@ const elements = {
   randomIncludeLandscape: document.getElementById('randomIncludeLandscape'),
   scheduledPauseEnabled: document.getElementById('scheduledPauseEnabled'),
   scheduledPauseOptions: document.getElementById('scheduledPauseOptions'),
+  videoModelWrapper: document.getElementById('videoModelWrapper'),
   pauseEveryN: document.getElementById('pauseEveryN'),
   pauseUnitText: document.getElementById('pauseUnitText'),
   pauseMinMinutes: document.getElementById('pauseMinMinutes'),
@@ -224,6 +225,47 @@ function setupEventListeners() {
       elements.scheduledPauseEnabled.checked ? 'block' : 'none';
     saveSettings();
   });
+
+  // Easter egg: 10 clicks on the logo unlocks the video model select + adds 4K resolution
+  let videoModelEggClicks = 0;
+  let videoModelEggTimer = null;
+  const logoIcon = document.getElementById('logoIcon');
+  if (logoIcon) {
+    logoIcon.addEventListener('click', async () => {
+      videoModelEggClicks++;
+      clearTimeout(videoModelEggTimer);
+      // Reset counter if no click for 4 seconds
+      videoModelEggTimer = setTimeout(() => { videoModelEggClicks = 0; }, 4000);
+
+      if (videoModelEggClicks >= 10) {
+        videoModelEggClicks = 0;
+        const sel = elements.videoModel;
+        const wrapper = elements.videoModelWrapper;
+        if (sel && sel.disabled) {
+          sel.disabled = false;
+          if (wrapper) wrapper.style.opacity = '1';
+        }
+        // Add 4K to video resolution select if not already present
+        const resSel = elements.videoResolution;
+        if (resSel && !Array.from(resSel.options).some(o => o.value === '4k')) {
+          const opt = document.createElement('option');
+          opt.value = '4k';
+          opt.textContent = '4K';
+          resSel.appendChild(opt);
+        }
+        // Add 4K to image resolution select if not already present
+        const imgResSel = elements.imageResolution;
+        if (imgResSel && !Array.from(imgResSel.options).some(o => o.value === '4k')) {
+          const opt = document.createElement('option');
+          opt.value = '4k';
+          opt.textContent = '4K';
+          imgResSel.appendChild(opt);
+        }
+        await chrome.storage.local.set({ videoModelUnlocked: true });
+      }
+    });
+  }
+
 
   // Update pause unit text based on mode
   elements.generationMode.addEventListener('change', () => {
@@ -575,7 +617,28 @@ async function loadSettings() {
   if (settings.randomIncludePortrait !== undefined) elements.randomIncludePortrait.checked = settings.randomIncludePortrait;
   if (settings.randomIncludeLandscape !== undefined) elements.randomIncludeLandscape.checked = settings.randomIncludeLandscape;
 
-  // Scheduled pause settings
+  // Unlock check: video model + 4K resolution
+  const videoUnlocked = (await chrome.storage.local.get(['videoModelUnlocked'])).videoModelUnlocked;
+  if (videoUnlocked && elements.videoModel) {
+    elements.videoModel.disabled = false;
+    if (elements.videoModelWrapper) elements.videoModelWrapper.style.opacity = '1';
+    // Add 4K to video resolution if not present
+    const resSel = elements.videoResolution;
+    if (resSel && !Array.from(resSel.options).some(o => o.value === '4k')) {
+      const opt = document.createElement('option');
+      opt.value = '4k';
+      opt.textContent = '4K';
+      resSel.appendChild(opt);
+    }
+    // Add 4K to image resolution if not present
+    const imgResSel = elements.imageResolution;
+    if (imgResSel && !Array.from(imgResSel.options).some(o => o.value === '4k')) {
+      const opt = document.createElement('option');
+      opt.value = '4k';
+      opt.textContent = '4K';
+      imgResSel.appendChild(opt);
+    }
+  }
   if (settings.scheduledPauseEnabled !== undefined) {
     elements.scheduledPauseEnabled.checked = settings.scheduledPauseEnabled;
     elements.scheduledPauseOptions.style.display = settings.scheduledPauseEnabled ? 'block' : 'none';
