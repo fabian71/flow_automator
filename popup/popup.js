@@ -885,7 +885,18 @@ function setInputsDisabled(disabled) {
   elements.aspectRatio.disabled = disabled;
   elements.videoDuration.disabled = disabled;
   if (elements.videoResolution) elements.videoResolution.disabled = disabled;
-  if (elements.videoModel) elements.videoModel.disabled = disabled;
+  if (elements.videoModel) {
+    if (disabled) {
+      elements.videoModel.disabled = true;
+    } else {
+      // Quando parar, só reabilita se o usuário tiver debloqueado (opacity do wrapper === '1')
+      if (elements.videoModelWrapper && elements.videoModelWrapper.style.opacity === '1') {
+        elements.videoModel.disabled = false;
+      } else {
+        elements.videoModel.disabled = true;
+      }
+    }
+  }
   elements.generationTimeout.disabled = disabled;
 
   elements.maxRetries.disabled = disabled;
