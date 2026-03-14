@@ -73,7 +73,8 @@ async function initDashboardSetup() {
             humanClick(dashboardBtn);
             await sleep(800);
         } else {
-            console.warn('[Flow Automator] Dashboard button not found, skipping.');
+            console.log('[Flow Automator] Dashboard button not found (already on dashboard?), skipping steps 1-3.');
+            return;
         }
 
         // Step 2: Click the grid settings button (icon: settings_2)
@@ -456,16 +457,18 @@ async function uploadImage(dataUrl, fileName, fileType, cropMode = 'landscape') 
     };
 
     const countSlotImages = () => {
-        return document.querySelectorAll('button[data-card-open] img[src], button[data-card-open] [style*="background-image"]').length;
+        // Broad selector for slots: elements with aria-haspopup="dialog" or data-card-open
+        // We match any element (div or button) that contains an img, video or background-image
+        return document.querySelectorAll('[aria-haspopup="dialog"] img, [aria-haspopup="dialog"] video, [aria-haspopup="dialog"] [style*="background-image"], [data-card-open] img, [data-card-open] video, [data-card-open] [style*="background-image"]').length;
     };
 
-    const waitForInitialSlotFilled = async (beforeCount, timeoutMs = 12000) => {
+    const waitForInitialSlotFilled = async (beforeCount, timeoutMs = 20000) => {
         let left = timeoutMs;
         while (left > 0) {
             const afterCount = countSlotImages();
             if (afterCount > beforeCount) return true;
-            await sleep(250);
-            left -= 250;
+            await sleep(500);
+            left -= 500;
         }
         return false;
     };
@@ -488,15 +491,21 @@ async function uploadImage(dataUrl, fileName, fileType, cropMode = 'landscape') 
     };
 
     const selectInitialSlot = async () => {
-        const candidates = Array.from(document.querySelectorAll("[aria-haspopup='dialog'], [type='button'][aria-haspopup='dialog']"))
+        // O Flow mudou para <div type="button" aria-haspopup="dialog">Start</div>
+        const candidates = Array.from(document.querySelectorAll("[aria-haspopup='dialog'][type='button'], div[aria-haspopup='dialog'], button[aria-haspopup='dialog']"))
             .filter(isVisible);
 
         const initialBtn = candidates.find(el => {
             const t = norm(el.textContent);
-            return t === 'inicial' || t === 'initial' || t.startsWith('inicial ') || t.startsWith('initial ') || t.includes(' inicial') || t.includes(' initial');
+            return t === 'start' || t === 'inicio' || t === 'inicial' || t === 'initial' || 
+                   t.includes('start') || t.includes('inicio') || t.includes('inicial') || t.includes('initial');
         });
 
         if (initialBtn) return clickElementSafe(initialBtn);
+        
+        // Se não achar por texto, geralmente o 'Start' é o primeiro da lista
+        if (candidates.length > 0) return clickElementSafe(candidates[0]);
+        
         return false;
     };
 
@@ -873,22 +882,30 @@ async function clickDismissButton() {
             const aria = norm(el.getAttribute('aria-label'));
             const title = norm(el.getAttribute('title'));
             const icon = norm(el.querySelector('i')?.textContent);
+            
+            // Suporte expandido para icones de fechar/conclusao e texto Dismiss
             return (
                 icon === 'close' ||
                 icon === 'cancel' ||
-                txt.includes('fechar') ||
+                icon === 'check' ||
+                icon === 'check_circle' ||
+                txt === 'dismiss' ||
+                txt === 'dismissed' ||
+                txt === 'dispensar' ||
+                txt === 'fechar' ||
                 txt.includes('close') ||
-                txt.includes('dispens') ||
-                aria.includes('fechar') ||
                 aria.includes('close') ||
-                title.includes('fechar') ||
-                title.includes('close')
+                aria.includes('dismiss') ||
+                aria.includes('fechar') ||
+                title.includes('close') ||
+                title.includes('fechar')
             );
         });
 
         if (btn) {
+            console.log('[Flow Automator] Clicando para fechar toast/modal (' + (btn.textContent || 'icon') + ')...');
             reactClick(btn);
-            await sleep(250);
+            await sleep(300);
             return true;
         }
     } catch (_) { }
@@ -1079,10 +1096,10 @@ async function processPrompt(prompt, index, config, image = null) {
                 const upscaleComplete = await waitForUpscaleComplete(300000);
                 if (upscaleComplete) {
                     await clickDismissButton();
-                    await sleep(3000);
+                    await sleep(1000);
                 }
             } else if (config.mode === 'image' && config.imageResolution === '1k') {
-                await sleep(2000);
+                await sleep(1000);
             }
 
             const targetVideoRes = normalizeVideoResolution(config.videoResolution || (config.doUpscale ? '1080p' : '720p'));
@@ -1418,10 +1435,8 @@ async function downloadFromImageCard(card, resolution) {
         console.log('[Flow Automator] Clicando na resolução:', resolutionItem.textContent.trim());
         reactClick(resolutionItem);
 
-        if (resolution !== '1k') {
-            await waitForUpscaleComplete();
-        } else {
-            await sleep(3000);
+        if (resolution === '1k') {
+            await sleep(1000);
         }
         return true;
     }
@@ -1884,11 +1899,8 @@ async function finishDownloadInEditView(resolution) {
             console.log('[Flow Automator] Clicking resolution:', text);
             reactClick(item);
 
-            if (resolution !== '1k') {
-                updateOverlay('Aguardando upscale...');
-                await waitForUpscaleComplete(60000);
-            } else {
-                await sleep(2000);
+            if (resolution === '1k') {
+                await sleep(1000);
             }
 
             chrome.runtime.sendMessage({ action: 'updatePhase', phase: 'none' });
@@ -1903,26 +1915,73 @@ async function waitForUpscaleComplete(timeoutMs = 60000) {
     console.log('[Flow Automator] Aguardando conclusao do upscale...');
     const baselineDownloadTs = lastFlowDownloadDetectedAt;
     const startTime = Date.now();
-    await sleep(2000);
+    
+    // Pequeno delay inicial
+    await sleep(800);
+
     while (Date.now() - startTime < timeoutMs) {
-        if (lastFlowDownloadDetectedAt > baselineDownloadTs) {
-            console.log('[Flow Automator] Download detectado via background. Encerrando espera de upscale.');
+        const toasts = Array.from(document.querySelectorAll('[data-sonner-toast]'));
+        
+        // 1. Procura estritamente pelo ícone 'check_circle' (indica conclusão real)
+        const finishedToast = toasts.find(t => {
+            const icons = Array.from(t.querySelectorAll('i'));
+            return icons.some(i => (i.textContent || '').trim() === 'check_circle');
+        });
+
+        if (finishedToast) {
+            console.log('[Flow Automator] Conclusão detectada (check_circle encontrado).');
+            // Procura o botão Dismiss dentro deste toast de conclusão
+            const dismissBtn = Array.from(finishedToast.querySelectorAll('button')).find(b => {
+                const t = (b.textContent || '').toLowerCase();
+                return t.includes('dismiss') || t.includes('dispensar');
+            }) || finishedToast.querySelector('button');
+
+            if (dismissBtn) {
+                console.log('[Flow Automator] Clicando em Dismiss no toast final...');
+                reactClick(dismissBtn);
+            }
             await sleep(1000);
             return true;
         }
 
-        const toasts = Array.from(document.querySelectorAll('[data-sonner-toast]'));
-        const upscaleToast = toasts.find(t => {
+        // 2. Verifica se é apenas o toast de "Upscaling your image" (progresso)
+        const isProgress = toasts.some(t => {
             const text = t.textContent.toLowerCase();
-            return text.includes('aumentando') || text.includes('resoluc') || text.includes('upscaling') || text.includes('download vai comecar');
+            return text.includes('upscaling your image') || text.includes('aumentando sua imagem');
         });
-        if (!upscaleToast) {
-            console.log('[Flow Automator] Upscale concluido.');
-            await sleep(2000);
+
+        if (isProgress) {
+            updateOverlay('Fazendo upscale...');
+            // Não clicamos em Dismiss
+        }
+
+        // 3. Se o background já detectou o download, esperamos um pouco pelo toast de conclusão
+        if (lastFlowDownloadDetectedAt > baselineDownloadTs) {
+            console.log('[Flow Automator] Download detectado, procurando toast de conclusão para limpar...');
+            const finalCheck = Array.from(document.querySelectorAll('[data-sonner-toast]')).find(t => 
+                t.textContent.includes('check_circle') || 
+                Array.from(t.querySelectorAll('i')).some(i => i.textContent === 'check_circle')
+            );
+            
+            if (finalCheck) {
+                const btn = finalCheck.querySelector('button');
+                if (btn) reactClick(btn);
+                await sleep(500);
+            }
             return true;
         }
+
+        // 4. Se não há toast de progresso nem de sucesso, e já passou um tempo, prosseguimos
+        const anyUpscaleToast = toasts.some(t => t.textContent.toLowerCase().includes('upscal'));
+        if (!anyUpscaleToast && Date.now() - startTime > 15000) {
+            console.log('[Flow Automator] Nenhum toast de upscale detectado após 15s.');
+            return true;
+        }
+
         updateOverlay('Aguardando upscale...');
-        await sleep(2000);
+        await sleep(1000); 
     }
+    
+    console.log('[Flow Automator] Timeout aguardando upscale.');
     return false;
 }
