@@ -71,42 +71,51 @@ async function initDashboardSetup() {
         if (dashboardBtn) {
             console.log('[Flow Automator] Clicking dashboard button...');
             humanClick(dashboardBtn);
-            await sleep(800);
+            await sleep(1000);
         } else {
-            console.log('[Flow Automator] Dashboard button not found (already on dashboard?), skipping steps 1-3.');
-            return;
+            console.log('[Flow Automator] Dashboard button not found (already on dashboard?), continuing...');
         }
 
         // Step 2: Click the grid settings button (icon: settings_2)
         const settingsBtn = Array.from(document.querySelectorAll('button')).find(b => {
             const icon = b.querySelector('i');
+            // User provided specifically i with text settings_2 and span "View Tile Grid Settings"
             return icon && icon.textContent.trim() === 'settings_2' && isVisible(b);
         });
-        if (!settingsBtn) {
-            console.warn('[Flow Automator] Settings_2 button not found, skipping.');
-            return;
+
+        if (settingsBtn) {
+            // Only click if not already expanded
+            if (settingsBtn.getAttribute('aria-expanded') !== 'true') {
+                console.log('[Flow Automator] Opening settings_2 menu...');
+                humanClick(settingsBtn);
+                await sleep(800);
+            } else {
+                console.log('[Flow Automator] settings_2 menu already open.');
+            }
+        } else {
+            console.warn('[Flow Automator] Settings_2 button not found, continuing to look for Grid tab...');
         }
-        console.log('[Flow Automator] Clicking settings_2 button...');
-        humanClick(settingsBtn);
-        await sleep(800);
 
         // Step 3: Wait for the dropdown menu and click the 'Grid' tab
         let gridTab = null;
-        for (let i = 0; i < 20; i++) {
-            gridTab = Array.from(document.querySelectorAll('[role="tab"]')).find(b => {
+        for (let i = 0; i < 25; i++) {
+            gridTab = Array.from(document.querySelectorAll('[role="tab"], button')).find(b => {
                 const label = (b.getAttribute('aria-label') || '').toLowerCase();
                 const icon = b.querySelector('i');
                 const iconText = icon ? icon.textContent.trim() : '';
-                return (label === 'grid' || b.textContent.trim().toLowerCase().startsWith('grid')) && iconText === 'dashboard' && isVisible(b);
+                const text = b.textContent.trim().toLowerCase();
+                // Match "Grid" text or label, with dashboard icon
+                return (label === 'grid' || text.startsWith('grid')) && iconText === 'dashboard' && isVisible(b);
             });
             if (gridTab) break;
-            await sleep(150);
+            await sleep(200);
         }
+
         if (gridTab) {
             console.log('[Flow Automator] Clicking Grid tab...');
             humanClick(gridTab);
-            await sleep(400);
-            // Close the menu with Escape
+            await sleep(500);
+            // Close the menu with Escape to clean up
             document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
             await sleep(300);
         } else {
