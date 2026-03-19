@@ -32,6 +32,12 @@ const elements = {
   progressFill: document.getElementById('progressFill'),
   randomizeAspectRatio: document.getElementById('randomizeAspectRatio'),
   randomAspectRatioOptions: document.getElementById('randomAspectRatioOptions'),
+  randomIncludeLandscape43: document.getElementById('randomIncludeLandscape43'),
+  randomIncludeLandscape43Wrapper: document.getElementById('randomIncludeLandscape43Wrapper'),
+  randomIncludeSquare: document.getElementById('randomIncludeSquare'),
+  randomIncludeSquareWrapper: document.getElementById('randomIncludeSquareWrapper'),
+  randomIncludePortrait34: document.getElementById('randomIncludePortrait34'),
+  randomIncludePortrait34Wrapper: document.getElementById('randomIncludePortrait34Wrapper'),
   randomIncludePortrait: document.getElementById('randomIncludePortrait'),
   randomIncludeLandscape: document.getElementById('randomIncludeLandscape'),
   scheduledPauseEnabled: document.getElementById('scheduledPauseEnabled'),
@@ -59,6 +65,58 @@ const elements = {
 let isProcessing = false;
 let selectedImages = [];
 
+const VIDEO_RATIOS = ['16:9', '9:16'];
+
+function getAllowedRatios() {
+  return elements.generationMode.value === 'video'
+    ? VIDEO_RATIOS
+    : ['16:9', '4:3', '1:1', '3:4', '9:16'];
+}
+
+function getActiveRandomRatioElements() {
+  const base = [
+    { input: elements.randomIncludeLandscape, wrapper: null, ratio: '16:9' },
+    { input: elements.randomIncludePortrait, wrapper: null, ratio: '9:16' }
+  ];
+
+  if (elements.generationMode.value === 'image') {
+    base.splice(1, 0,
+      { input: elements.randomIncludeLandscape43, wrapper: elements.randomIncludeLandscape43Wrapper, ratio: '4:3' },
+      { input: elements.randomIncludeSquare, wrapper: elements.randomIncludeSquareWrapper, ratio: '1:1' },
+      { input: elements.randomIncludePortrait34, wrapper: elements.randomIncludePortrait34Wrapper, ratio: '3:4' }
+    );
+  }
+
+  return base.filter(item => item.input);
+}
+
+function syncAspectRatioOptionsByMode() {
+  const isVideo = elements.generationMode.value === 'video';
+
+  Array.from(elements.aspectRatio.options).forEach((option) => {
+    const isImageOnly = option.dataset.mode === 'image';
+    option.hidden = isVideo && isImageOnly;
+  });
+
+  if (!getAllowedRatios().includes(elements.aspectRatio.value)) {
+    elements.aspectRatio.value = '16:9';
+  }
+
+  [
+    { input: elements.randomIncludeLandscape43, wrapper: elements.randomIncludeLandscape43Wrapper },
+    { input: elements.randomIncludeSquare, wrapper: elements.randomIncludeSquareWrapper },
+    { input: elements.randomIncludePortrait34, wrapper: elements.randomIncludePortrait34Wrapper }
+  ].forEach(({ input, wrapper }) => {
+    if (!input || !wrapper) return;
+    wrapper.style.display = isVideo ? 'none' : '';
+    if (isVideo) input.checked = false;
+  });
+
+  if (isVideo && !elements.randomIncludeLandscape.checked && !elements.randomIncludePortrait.checked) {
+    elements.randomIncludeLandscape.checked = true;
+  }
+}
+
 // ===== Initialize =====
 document.addEventListener('DOMContentLoaded', async () => {
   await loadSettings();
@@ -80,6 +138,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 function updateModeVisibility() {
   const isImage = elements.generationMode.value === 'image';
   const isVideo = elements.generationMode.value === 'video';
+
+  syncAspectRatioOptionsByMode();
 
   if (elements.imageUploadGroup) {
     // Enable image upload for Video mode (Image to Video)
@@ -191,19 +251,18 @@ function setupEventListeners() {
   // Validate at least one option is checked when randomizing
   const validateRandomOptions = () => {
     if (elements.randomizeAspectRatio.checked) {
-      const hasAtLeastOne = elements.randomIncludePortrait.checked || elements.randomIncludeLandscape.checked;
+      const randomRatioElements = getActiveRandomRatioElements().map((item) => item.input);
+      const hasAtLeastOne = randomRatioElements.some((el) => el.checked);
       if (!hasAtLeastOne) {
-        // Re-check the last unchecked one
-        if (!elements.randomIncludePortrait.checked) {
-          elements.randomIncludePortrait.checked = true;
-        } else {
-          elements.randomIncludeLandscape.checked = true;
-        }
+        randomRatioElements[0].checked = true;
       }
     }
     saveSettings();
   };
 
+  elements.randomIncludeLandscape43.addEventListener('change', validateRandomOptions);
+  elements.randomIncludeSquare.addEventListener('change', validateRandomOptions);
+  elements.randomIncludePortrait34.addEventListener('change', validateRandomOptions);
   elements.randomIncludePortrait.addEventListener('change', validateRandomOptions);
   elements.randomIncludeLandscape.addEventListener('change', validateRandomOptions);
 
@@ -320,6 +379,9 @@ function setupEventListeners() {
     elements.imageResolution,
     elements.videoResolution,
     elements.videoDuration,
+    elements.randomIncludeLandscape43,
+    elements.randomIncludeSquare,
+    elements.randomIncludePortrait34,
     elements.randomIncludePortrait,
     elements.randomIncludeLandscape
   ];
@@ -551,6 +613,9 @@ async function loadSettings() {
     'generationTimeout',
     'maxRetries',
     'randomizeAspectRatio',
+    'randomIncludeLandscape43',
+    'randomIncludeSquare',
+    'randomIncludePortrait34',
     'randomIncludePortrait',
     'randomIncludeLandscape',
     'scheduledPauseEnabled',
@@ -614,8 +679,13 @@ async function loadSettings() {
     elements.aspectRatio.closest('.form-group').style.opacity = settings.randomizeAspectRatio ? '0.5' : '1';
     elements.aspectRatio.disabled = settings.randomizeAspectRatio;
   }
+  if (settings.randomIncludeLandscape43 !== undefined) elements.randomIncludeLandscape43.checked = settings.randomIncludeLandscape43;
+  if (settings.randomIncludeSquare !== undefined) elements.randomIncludeSquare.checked = settings.randomIncludeSquare;
+  if (settings.randomIncludePortrait34 !== undefined) elements.randomIncludePortrait34.checked = settings.randomIncludePortrait34;
   if (settings.randomIncludePortrait !== undefined) elements.randomIncludePortrait.checked = settings.randomIncludePortrait;
   if (settings.randomIncludeLandscape !== undefined) elements.randomIncludeLandscape.checked = settings.randomIncludeLandscape;
+
+  syncAspectRatioOptionsByMode();
 
   // Unlock check: video model + 4K resolution
   const videoUnlocked = (await chrome.storage.local.get(['videoModelUnlocked'])).videoModelUnlocked;
@@ -680,6 +750,9 @@ async function saveSettings() {
     generationTimeout: parseInt(elements.generationTimeout.value) || 180,
     maxRetries: parseInt(elements.maxRetries.value) || 2,
     randomizeAspectRatio: elements.randomizeAspectRatio.checked,
+    randomIncludeLandscape43: elements.randomIncludeLandscape43.checked,
+    randomIncludeSquare: elements.randomIncludeSquare.checked,
+    randomIncludePortrait34: elements.randomIncludePortrait34.checked,
     randomIncludePortrait: elements.randomIncludePortrait.checked,
     randomIncludeLandscape: elements.randomIncludeLandscape.checked,
     scheduledPauseEnabled: elements.scheduledPauseEnabled.checked,
@@ -835,6 +908,9 @@ async function startAutomation() {
       generationTimeout: parseInt(elements.generationTimeout.value) || 180,
       maxRetries: parseInt(elements.maxRetries.value) || 2,
       randomizeAspectRatio: elements.randomizeAspectRatio.checked,
+      randomIncludeLandscape43: elements.randomIncludeLandscape43.checked,
+      randomIncludeSquare: elements.randomIncludeSquare.checked,
+      randomIncludePortrait34: elements.randomIncludePortrait34.checked,
       randomIncludePortrait: elements.randomIncludePortrait.checked,
       randomIncludeLandscape: elements.randomIncludeLandscape.checked,
       scheduledPauseEnabled: elements.scheduledPauseEnabled.checked,

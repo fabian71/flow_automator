@@ -186,8 +186,11 @@
           </label>
           <div class="select-wrapper">
             <select id="aspectRatio" class="form-select">
-              <option value="16:9">16:9 (Paisagem)</option>
-              <option value="9:16">9:16 (Retrato)</option>
+              <option value="16:9" data-mode="all">16:9 (Paisagem)</option>
+              <option value="4:3" data-mode="image">4:3 (Paisagem)</option>
+              <option value="1:1" data-mode="image">1:1 (Quadrado)</option>
+              <option value="3:4" data-mode="image">3:4 (Retrato)</option>
+              <option value="9:16" data-mode="all">9:16 (Retrato)</option>
             </select>
             <svg class="select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="6 9 12 15 18 9"></polyline>
@@ -205,6 +208,21 @@
           <div id="randomAspectRatioOptions" style="margin-left: 30px; margin-top: 10px; display: none;">
             <p style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;">Escolha quais incluir no
               sorteio (mínimo 1):</p>
+            <label class="checkbox-wrapper" id="randomIncludeLandscape43Wrapper" style="margin-bottom: 4px;">
+              <input type="checkbox" id="randomIncludeLandscape43" checked>
+              <span class="checkbox-custom"></span>
+              <span class="checkbox-label" style="font-size: 13px;">Landscape (4:3)</span>
+            </label>
+            <label class="checkbox-wrapper" id="randomIncludeSquareWrapper" style="margin-bottom: 4px;">
+              <input type="checkbox" id="randomIncludeSquare" checked>
+              <span class="checkbox-custom"></span>
+              <span class="checkbox-label" style="font-size: 13px;">Square (1:1)</span>
+            </label>
+            <label class="checkbox-wrapper" id="randomIncludePortrait34Wrapper" style="margin-bottom: 4px;">
+              <input type="checkbox" id="randomIncludePortrait34" checked>
+              <span class="checkbox-custom"></span>
+              <span class="checkbox-label" style="font-size: 13px;">Portrait (3:4)</span>
+            </label>
             <label class="checkbox-wrapper" style="margin-bottom: 4px;">
               <input type="checkbox" id="randomIncludePortrait" checked>
               <span class="checkbox-custom"></span>

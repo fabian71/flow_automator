@@ -118,8 +118,6 @@ async function initDashboardSetup() {
             // Close the menu with Escape to clean up
             document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
             await sleep(300);
-        } else {
-            console.warn('[Flow Automator] Grid tab not found in menu.');
         }
 
         console.log('[Flow Automator] Dashboard setup complete.');
@@ -361,7 +359,7 @@ async function ensurePromptInput(promptText, maxAttempts = 3) {
 // Uses afHumanClick (with clientX/clientY) - confirmed working approach from reference extension.
 // Selectors confirmed by browser inspection:
 //   Mode tabs:   button[role='tab'][id$='trigger-IMAGE'] / trigger-VIDEO
-//   Ratio tabs:  button[role='tab'][id$='trigger-LANDSCAPE'] / trigger-PORTRAIT
+//   Ratio tabs:  trigger-LANDSCAPE / LANDSCAPE_4_3 / SQUARE / PORTRAIT_3_4 / PORTRAIT
 //   Quantity:    button[role='tab'][id$='trigger-1']
 //   Model dropdown: button with arrow_drop_down inside div[role='menu']
 //   Model items: div[role='menuitem'] containing model name text
@@ -986,6 +984,9 @@ async function processPrompt(prompt, index, config, image = null) {
         if (config.randomizeAspectRatio) {
             const options = [];
             if (config.randomIncludeLandscape) options.push('16:9');
+            if (config.randomIncludeLandscape43) options.push('4:3');
+            if (config.randomIncludeSquare) options.push('1:1');
+            if (config.randomIncludePortrait34) options.push('3:4');
             if (config.randomIncludePortrait) options.push('9:16');
             if (options.length > 0) {
                 targetRatio = options[Math.floor(Math.random() * options.length)];
@@ -998,7 +999,7 @@ async function processPrompt(prompt, index, config, image = null) {
             imageModel: config.imageModel || 'Nano Banana 2',
             videoModel: config.videoModel || 'Veo 3.1 - Fast [Lower Priority]',
             modelKey: normalizeImageModelKey(config.imageModel || 'Nano Banana 2'),
-            aspectRatio: (targetRatio === '9:16') ? 'portrait' : 'landscape'
+            aspectRatio: targetRatio
         };
         console.log('[Flow Automator] settingsConfig:', settingsConfig);
 

@@ -283,7 +283,7 @@ async function mainWorldFillText(tabId, text) {
 // The working reference extension (lhcmnhdbddgagibbbgppakocflbnknoa) also uses only .click()
 // Config: { mode: 'create-image'|'text-to-video'|'image-to-video',
 //           imageModel: 'Nano Banana 2'|'Nano Banana Pro'|'Imagen 4',
-//           aspectRatio: 'landscape'|'portrait' }
+//           aspectRatio: '16:9'|'4:3'|'1:1'|'3:4'|'9:16'|'landscape'|'portrait' }
 async function mainWorldSelectSettings(tabId, config) {
     try {
         const results = await chrome.scripting.executeScript({
@@ -354,13 +354,20 @@ async function mainWorldSelectSettings(tabId, config) {
                     return null;
                 }
 
-                function findSettingsMenu() {
-                    const menus = Array.from(document.querySelectorAll("[role='menu'], [role='dialog'], .DropdownMenuContent")).filter(isVisible);
-                    return menus.find(m => {
-                        const t = normText(m.textContent);
-                        return t.includes('image') || t.includes('video') || t.includes('paisagem') || t.includes('retrato') || t.includes('portrait') || t.includes('landscape') || t.includes('x1');
-                    }) || null;
-                }
+                    function normalizeAspectRatio(value) {
+                        const raw = String(value || '').trim();
+                        if (raw === 'portrait') return '9:16';
+                        if (raw === 'landscape') return '16:9';
+                        return raw || '16:9';
+                    }
+
+                    function findSettingsMenu() {
+                        const menus = Array.from(document.querySelectorAll("[role='menu'], [role='dialog'], .DropdownMenuContent")).filter(isVisible);
+                        return menus.find(m => {
+                            const t = normText(m.textContent);
+                            return t.includes('image') || t.includes('video') || t.includes('paisagem') || t.includes('retrato') || t.includes('portrait') || t.includes('landscape') || t.includes('square') || t.includes('quadrado') || t.includes('16:9') || t.includes('4:3') || t.includes('1:1') || t.includes('3:4') || t.includes('9:16') || t.includes('x1');
+                        }) || null;
+                    }
 
                 return (async () => {
                     const steps = [];
@@ -371,7 +378,7 @@ async function mainWorldSelectSettings(tabId, config) {
 
                         // 2) Open settings panel.
                         const trigger = await waitFor(
-                            () => byXPath("//button[descendant::i[normalize-space(text())='crop_16_9' or normalize-space(text())='crop_9_16']]"),
+                            () => byXPath("//button[descendant::i[normalize-space(text())='crop_16_9' or normalize-space(text())='crop_landscape' or normalize-space(text())='crop_square' or normalize-space(text())='crop_portrait' or normalize-space(text())='crop_9_16']]"),
                             6000,
                             120
                         );
@@ -384,7 +391,7 @@ async function mainWorldSelectSettings(tabId, config) {
                         if (!menu) return { success: false, error: 'settings-menu-not-opened', steps };
 
                         const isImage = cfg.mode === 'create-image';
-                        const wantPortrait = cfg.aspectRatio === 'portrait';
+                        const wantRatio = normalizeAspectRatio(cfg.aspectRatio);
                         const wantModel = isImage
                             ? normText(cfg.imageModel || 'nano banana 2')
                             : normText(cfg.videoModel || 'veo 3.1 - fast [lower priority]');
@@ -404,20 +411,30 @@ async function mainWorldSelectSettings(tabId, config) {
                         steps.push('mode:' + (isImage ? 'image' : 'video'));
 
                         // 5) Aspect ratio
+                        const ratioIdSuffixByValue = {
+                            '16:9': 'LANDSCAPE',
+                            '4:3': 'LANDSCAPE_4_3',
+                            '1:1': 'SQUARE',
+                            '3:4': 'PORTRAIT_3_4',
+                            '9:16': 'PORTRAIT'
+                        };
+                        const ratioLabelsByValue = {
+                            '16:9': ['paisagem', 'landscape', '16:9'],
+                            '4:3': ['4:3'],
+                            '1:1': ['quadrado', 'square', '1:1'],
+                            '3:4': ['3:4'],
+                            '9:16': ['retrato', 'portrait', '9:16']
+                        };
                         const ratioTab =
-                            (wantPortrait
-                                ? menu.querySelector("button[role='tab'][id$='trigger-PORTRAIT']")
-                                : menu.querySelector("button[role='tab'][id$='trigger-LANDSCAPE']")) ||
+                            menu.querySelector(`button[role='tab'][id$='trigger-${ratioIdSuffixByValue[wantRatio] || 'LANDSCAPE'}']`) ||
                             Array.from(menu.querySelectorAll("button[role='tab']")).find(b => {
                                 const t = normText(b.textContent);
-                                return wantPortrait
-                                    ? (t.includes('retrato') || t.includes('portrait') || t.includes('9:16'))
-                                    : (t.includes('paisagem') || t.includes('landscape') || t.includes('16:9'));
+                                return (ratioLabelsByValue[wantRatio] || ratioLabelsByValue['16:9']).some(label => t.includes(label));
                             });
                         if (!ratioTab) return { success: false, error: 'ratio-tab-not-found', steps };
                         humanClick(ratioTab);
                         await sleep(320);
-                        steps.push('ratio:' + (wantPortrait ? 'portrait' : 'landscape'));
+                        steps.push('ratio:' + wantRatio);
 
                         // 6) Quantity x1
                         const qtyTab =
@@ -849,6 +866,9 @@ async function processNextPrompt() {
                 totalPrompts: totalItems,
                 randomizeAspectRatio: config.randomizeAspectRatio,
                 randomizeAspectRatio: config.randomizeAspectRatio,
+                randomIncludeLandscape43: config.randomIncludeLandscape43,
+                randomIncludeSquare: config.randomIncludeSquare,
+                randomIncludePortrait34: config.randomIncludePortrait34,
                 randomIncludePortrait: config.randomIncludePortrait,
                 randomIncludeLandscape: config.randomIncludeLandscape
             }
@@ -876,6 +896,9 @@ async function processNextPrompt() {
                 totalPrompts: totalItems,
                 randomizeAspectRatio: config.randomizeAspectRatio,
                 randomizeAspectRatio: config.randomizeAspectRatio,
+                randomIncludeLandscape43: config.randomIncludeLandscape43,
+                randomIncludeSquare: config.randomIncludeSquare,
+                randomIncludePortrait34: config.randomIncludePortrait34,
                 randomIncludePortrait: config.randomIncludePortrait,
                 randomIncludeLandscape: config.randomIncludeLandscape
             }
