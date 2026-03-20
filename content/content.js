@@ -33,12 +33,17 @@ let lastFlowDownloadDetectedAt = 0;
 let dashboardSetupDone = false;
 
 // ===== Dashboard Setup (runs once before first prompt) =====
-async function initDashboardSetup() {
+async function initDashboardSetup(config = {}) {
     if (dashboardSetupDone) return;
-    dashboardSetupDone = true;
     console.log('[Flow Automator] Running one-time dashboard setup...');
 
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const norm = (v) => String(v || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
     const isVisible = (el) => {
         if (!el || !el.isConnected) return false;
         const st = window.getComputedStyle(el);
@@ -76,11 +81,45 @@ async function initDashboardSetup() {
             console.log('[Flow Automator] Dashboard button not found (already on dashboard?), continuing...');
         }
 
-        // Step 2: Click the grid settings button (icon: settings_2)
+        // Step 2: Some accounts require opening the scenes creation panel first.
+        const scenesBtn = Array.from(document.querySelectorAll('button')).find(b => {
+            const icon = norm(b.querySelector('i')?.textContent);
+            const label = norm((b.getAttribute('aria-label') || '') + ' ' + (b.textContent || ''));
+            return isVisible(b) && (
+                icon === 'play_movies' ||
+                label.includes('criacao de cenas') ||
+                label.includes('criação de cenas') ||
+                label.includes('scene creation')
+            );
+        });
+        if (scenesBtn && config.mode !== 'image') {
+            console.log('[Flow Automator] Clicking scenes creation button...');
+            humanClick(scenesBtn);
+            await sleep(1000);
+        }
+
+        // Step 3: Click the grid settings button (icon: settings_2)
         const settingsBtn = Array.from(document.querySelectorAll('button')).find(b => {
-            const icon = b.querySelector('i');
-            // User provided specifically i with text settings_2 and span "View Tile Grid Settings"
-            return icon && icon.textContent.trim() === 'settings_2' && isVisible(b);
+            const icon = norm(b.querySelector('i')?.textContent);
+            const popupType = norm(b.getAttribute('aria-haspopup') || '');
+            const label = norm(
+                (b.getAttribute('aria-label') || '') + ' ' +
+                (b.getAttribute('data-tooltip') || '') + ' ' +
+                (b.textContent || '')
+            );
+            // Match the tile-grid settings trigger, not any generic settings_2 button.
+            return (
+                icon === 'settings_2' &&
+                popupType === 'menu' &&
+                isVisible(b) &&
+                (
+                    label.includes('grid settings') ||
+                    label.includes('tile grid') ||
+                    label.includes('configuracoes da grade') ||
+                    label.includes('configuracoes de grade') ||
+                    label.includes('grade de blocos')
+                )
+            );
         });
 
         if (settingsBtn) {
@@ -96,28 +135,35 @@ async function initDashboardSetup() {
             console.warn('[Flow Automator] Settings_2 button not found, continuing to look for Grid tab...');
         }
 
-        // Step 3: Wait for the dropdown menu and click the 'Grid' tab
+        // Step 4: Wait for the dropdown menu and click the 'Grid/Grade' tab
         let gridTab = null;
         for (let i = 0; i < 25; i++) {
             gridTab = Array.from(document.querySelectorAll('[role="tab"], button')).find(b => {
-                const label = (b.getAttribute('aria-label') || '').toLowerCase();
-                const icon = b.querySelector('i');
-                const iconText = icon ? icon.textContent.trim() : '';
-                const text = b.textContent.trim().toLowerCase();
-                // Match "Grid" text or label, with dashboard icon
-                return (label === 'grid' || text.startsWith('grid')) && iconText === 'dashboard' && isVisible(b);
+                const label = norm(b.getAttribute('aria-label') || '');
+                const iconText = norm(b.querySelector('i')?.textContent);
+                const text = norm(b.textContent || '');
+                const isGridTab = (
+                    label === 'grid' ||
+                    label === 'grade' ||
+                    text.startsWith('grid') ||
+                    text.startsWith('grade')
+                );
+                return isGridTab && iconText === 'dashboard' && isVisible(b);
             });
             if (gridTab) break;
             await sleep(200);
         }
 
         if (gridTab) {
-            console.log('[Flow Automator] Clicking Grid tab...');
+            console.log('[Flow Automator] Clicking Grid/Grade tab...');
             humanClick(gridTab);
             await sleep(500);
             // Close the menu with Escape to clean up
             document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
             await sleep(300);
+            dashboardSetupDone = true;
+        } else {
+            console.warn('[Flow Automator] Grid/Grade tab not found; setup will be retried later.');
         }
 
         console.log('[Flow Automator] Dashboard setup complete.');
@@ -942,7 +988,7 @@ async function processPrompt(prompt, index, config, image = null) {
         // One-time dashboard setup before the very first prompt
         if (index === 0) {
             updateOverlay('Configurando dashboard...');
-            await initDashboardSetup();
+            await initDashboardSetup(config);
         }
 
         // Improved Page Ready Wait: Wait for history to likely load
