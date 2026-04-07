@@ -81,22 +81,7 @@ async function initDashboardSetup(config = {}) {
             console.log('[Flow Automator] Dashboard button not found (already on dashboard?), continuing...');
         }
 
-        // Step 2: Some accounts require opening the scenes creation panel first.
-        const scenesBtn = Array.from(document.querySelectorAll('button')).find(b => {
-            const icon = norm(b.querySelector('i')?.textContent);
-            const label = norm((b.getAttribute('aria-label') || '') + ' ' + (b.textContent || ''));
-            return isVisible(b) && (
-                icon === 'play_movies' ||
-                label.includes('criacao de cenas') ||
-                label.includes('criação de cenas') ||
-                label.includes('scene creation')
-            );
-        });
-        if (scenesBtn && config.mode !== 'image') {
-            console.log('[Flow Automator] Clicking scenes creation button...');
-            humanClick(scenesBtn);
-            await sleep(1000);
-        }
+        // Step 2 was removed because it was clicking the "Criação de cenas" button which is incorrect now.
 
         // Step 3: Click the grid settings button (icon: settings_2)
         const settingsBtn = Array.from(document.querySelectorAll('button')).find(b => {
@@ -148,7 +133,7 @@ async function initDashboardSetup(config = {}) {
                     text.startsWith('grid') ||
                     text.startsWith('grade')
                 );
-                return isGridTab && iconText === 'dashboard' && isVisible(b);
+                return isGridTab && isVisible(b);
             });
             if (gridTab) break;
             await sleep(200);
