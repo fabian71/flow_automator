@@ -394,7 +394,7 @@ async function mainWorldSelectSettings(tabId, config) {
                         const wantRatio = normalizeAspectRatio(cfg.aspectRatio);
                         const wantModel = isImage
                             ? normText(cfg.imageModel || 'nano banana 2')
-                            : normText(cfg.videoModel || 'veo 3.1 - fast [lower priority]');
+                            : normText(cfg.videoModel || 'veo 3.1 - lite [lower priority]');
 
                         // 4) Mode
                         const modeTab =

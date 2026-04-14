@@ -622,7 +622,8 @@ async function loadSettings() {
     'pauseEveryN',
     'pauseMinMinutes',
     'pauseMaxMinutes',
-    'videoDuration'
+    'videoDuration',
+    'videoModelUnlocked'
   ]);
 
   // Load saved images from Chunked Storage
@@ -664,9 +665,31 @@ async function loadSettings() {
   if (settings.subfolder) elements.subfolder.value = settings.subfolder;
   if (settings.delaySeconds) elements.delaySeconds.value = settings.delaySeconds;
   if (settings.aspectRatio) elements.aspectRatio.value = settings.aspectRatio;
+    // Unlock check: video model + 4K resolution
+  if (settings.videoModelUnlocked && elements.videoModel) {
+    elements.videoModel.disabled = false;
+    if (elements.videoModelWrapper) elements.videoModelWrapper.style.opacity = '1';
+    // Add 4K to video resolution if not present
+    const resSel = elements.videoResolution;
+    if (resSel && !Array.from(resSel.options).some(o => o.value === '4k')) {
+      const opt = document.createElement('option');
+      opt.value = '4k';
+      opt.textContent = '4K';
+      resSel.appendChild(opt);
+    }
+    // Add 4K to image resolution if not present
+    const imgResSel = elements.imageResolution;
+    if (imgResSel && !Array.from(imgResSel.options).some(o => o.value === '4k')) {
+      const opt = document.createElement('option');
+      opt.value = '4k';
+      opt.textContent = '4K';
+      imgResSel.appendChild(opt);
+    }
+  }
+
   if (settings.imageModel) elements.imageModel.value = settings.imageModel;
   if (settings.videoModel) elements.videoModel.value = settings.videoModel;
-  if (settings.imageResolution) elements.imageResolution.value = settings.imageResolution;
+  if (settings.imageResolution) elements.imageResolution.value = settings.imageResolution; 
   if (settings.videoResolution) elements.videoResolution.value = settings.videoResolution;
   if (settings.generationTimeout) elements.generationTimeout.value = settings.generationTimeout;
   if (settings.maxRetries) elements.maxRetries.value = settings.maxRetries;
@@ -687,28 +710,7 @@ async function loadSettings() {
 
   syncAspectRatioOptionsByMode();
 
-  // Unlock check: video model + 4K resolution
-  const videoUnlocked = (await chrome.storage.local.get(['videoModelUnlocked'])).videoModelUnlocked;
-  if (videoUnlocked && elements.videoModel) {
-    elements.videoModel.disabled = false;
-    if (elements.videoModelWrapper) elements.videoModelWrapper.style.opacity = '1';
-    // Add 4K to video resolution if not present
-    const resSel = elements.videoResolution;
-    if (resSel && !Array.from(resSel.options).some(o => o.value === '4k')) {
-      const opt = document.createElement('option');
-      opt.value = '4k';
-      opt.textContent = '4K';
-      resSel.appendChild(opt);
-    }
-    // Add 4K to image resolution if not present
-    const imgResSel = elements.imageResolution;
-    if (imgResSel && !Array.from(imgResSel.options).some(o => o.value === '4k')) {
-      const opt = document.createElement('option');
-      opt.value = '4k';
-      opt.textContent = '4K';
-      imgResSel.appendChild(opt);
-    }
-  }
+
   if (settings.scheduledPauseEnabled !== undefined) {
     elements.scheduledPauseEnabled.checked = settings.scheduledPauseEnabled;
     elements.scheduledPauseOptions.style.display = settings.scheduledPauseEnabled ? 'block' : 'none';

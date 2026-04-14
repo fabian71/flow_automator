@@ -1028,7 +1028,7 @@ async function processPrompt(prompt, index, config, image = null) {
         const settingsConfig = {
             mode: mode,  // 'create-image' | 'text-to-video' | 'image-to-video'
             imageModel: config.imageModel || 'Nano Banana 2',
-            videoModel: config.videoModel || 'Veo 3.1 - Fast [Lower Priority]',
+            videoModel: config.videoModel || 'Veo 3.1 - Lite [Lower Priority]',
             modelKey: normalizeImageModelKey(config.imageModel || 'Nano Banana 2'),
             aspectRatio: targetRatio
         };
