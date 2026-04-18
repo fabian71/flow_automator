@@ -12,9 +12,9 @@ let automationState = {
     lastRegistrationTime: 0,
     pauseEndTime: null,
     processedSinceLastPause: 0,
+    totalItems: 0,
     downloadPhase: 'none', // 'none', 'waiting_for_edit_view', 'selecting_resolution', 'waiting_for_upscale'
-    targetResolution: '2k',
-    lastRegistrationTime: 0
+    targetResolution: '2k'
 };
 
 // Map URL -> filename for renaming downloads
@@ -754,7 +754,8 @@ async function startAutomation(config) {
         isPaused: false,
         lastRegistrationTime: 0,
         pauseEndTime: null,
-        processedSinceLastPause: 0
+        processedSinceLastPause: 0,
+        totalItems: 0
     };
 
     try {
@@ -769,6 +770,7 @@ async function startAutomation(config) {
 
     const imageCount = config.imageCount || (config.images ? config.images.length : 0);
     const totalItems = imageCount > 0 ? imageCount : config.prompts.length;
+    automationState.totalItems = totalItems;
 
     await chrome.storage.local.set({
         isProcessing: true,
@@ -814,7 +816,7 @@ async function processNextPrompt() {
     const imageCount = config.imageCount || (config.images ? config.images.length : 0);
     const totalItems = imageCount > 0 ? imageCount : prompts.length;
 
-    if (!automationState.isProcessing || automationState.currentIndex >= totalItems) {
+    if (!automationState.isProcessing || automationState.currentIndex >= automationState.totalItems) {
         if (automationState.isProcessing) stopAutomation();
         return;
     }
@@ -939,6 +941,13 @@ async function handlePromptComplete(msg) {
     await sleep(delayMs);
     automationState.currentIndex++;
 
+    // Check if we reached the end
+    if (automationState.currentIndex >= automationState.totalItems) {
+        console.log('[BG] Automation reached the end, stopping...');
+        stopAutomation();
+        return;
+    }
+
     // Check if scheduled pause should be triggered
     if (checkScheduledPause()) {
         console.log('[BG] Automation paused due to scheduled pause');
@@ -1024,7 +1033,7 @@ function handleUnpause() {
     }
 
     // Resume processing if we have more prompts
-    if (automationState.isProcessing && automationState.currentIndex < automationState.prompts.length) {
+    if (automationState.isProcessing && automationState.currentIndex < automationState.totalItems) {
         processNextPrompt();
     }
 }
