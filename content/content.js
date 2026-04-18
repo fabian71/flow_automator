@@ -1593,7 +1593,11 @@ function handlePaused(message) {
 
     const bodyEl = statusElement.querySelector('.fa-status-body');
     if (bodyEl && message.isScheduled) {
+        // Prevent multiple buttons
+        if (bodyEl.querySelector('.fa-unpause-btn')) return;
+
         const unpauseBtn = document.createElement('button');
+        unpauseBtn.className = 'fa-unpause-btn';
         unpauseBtn.textContent = 'Continuar Agora';
         unpauseBtn.style.cssText = `
             margin-top: 12px;
@@ -1605,11 +1609,15 @@ function handlePaused(message) {
             font-weight: 600;
             cursor: pointer;
             transition: transform 0.2s;
+            display: block;
+            margin-left: auto;
+            margin-right: auto;
         `;
         unpauseBtn.onmouseover = () => unpauseBtn.style.transform = 'scale(1.05)';
         unpauseBtn.onmouseout = () => unpauseBtn.style.transform = 'scale(1)';
         unpauseBtn.onclick = () => {
             chrome.runtime.sendMessage({ type: 'unpause' });
+            unpauseBtn.remove();
         };
         bodyEl.appendChild(unpauseBtn);
     }
@@ -1617,6 +1625,10 @@ function handlePaused(message) {
 
 function handleUnpaused() {
     updateOverlay('Retomando automacao...');
+    if (statusElement) {
+        const btn = statusElement.querySelector('.fa-unpause-btn');
+        if (btn) btn.remove();
+    }
 }
 
 function showStatus(title, subtitle) {

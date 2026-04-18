@@ -3,6 +3,8 @@ const elements = {
   generationMode: document.getElementById('generationMode'),
   prompts: document.getElementById('prompts'),
   clearPrompts: document.getElementById('clearPrompts'),
+  removeCount: document.getElementById('removeCount'),
+  removePromptsBtn: document.getElementById('removePromptsBtn'),
   promptCount: document.getElementById('promptCount'),
   autoDownload: document.getElementById('autoDownload'),
   doUpscale: document.getElementById('doUpscale'),
@@ -228,8 +230,29 @@ function setupEventListeners() {
     updatePromptCount();
     saveSettings();
   });
+  // Remove prompts
+  elements.removePromptsBtn.addEventListener('click', () => {
+    const countToRemove = parseInt(elements.removeCount.value) || 0;
+    if (countToRemove <= 0) return;
 
-  // Aspect ratio change - affects upscale visibility
+    const lines = elements.prompts.value.split('\n');
+    let promptsRemoved = 0;
+    let removedIndices = [];
+
+    // Filter out non-empty lines to count prompts
+    for (let i = 0; i < lines.length && promptsRemoved < countToRemove; i++) {
+      const cleaned = cleanInvisibleChars(lines[i]);
+      if (cleaned.length > 0) {
+        promptsRemoved++;
+      }
+      removedIndices.push(i);
+    }
+
+    const finalLines = lines.filter((_, index) => !removedIndices.includes(index));
+    elements.prompts.value = finalLines.join('\n');
+    updatePromptCount();
+    saveSettings();
+  });
   elements.aspectRatio.addEventListener('change', () => {
     updateModeVisibility();
     saveSettings();
@@ -379,6 +402,7 @@ function setupEventListeners() {
     elements.imageResolution,
     elements.videoResolution,
     elements.videoDuration,
+    elements.removeCount,
     elements.randomIncludeLandscape43,
     elements.randomIncludeSquare,
     elements.randomIncludePortrait34,

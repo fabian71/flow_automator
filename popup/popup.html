@@ -169,6 +169,17 @@
               <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
             </svg>
           </button>
+            <div class="remove-prompts-group"
+              style="display: flex; align-items: center; gap: 4px; background: rgba(255,255,255,0.05); padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border-color);">
+              <input type="number" id="removeCount" class="form-input" value="1" min="1"
+                style="width: 45px; padding: 2px 4px; height: 24px; font-size: 12px; border: none; background: transparent; color: var(--text-primary); text-align: center;">
+              <button type="button" id="removePromptsBtn"
+                style="background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border-color); border-radius: 4px; padding: 0 8px; font-size: 10px; font-weight: 600; cursor: pointer; height: 24px; transition: all 0.20s; text-transform: uppercase; letter-spacing: 0.5px;"
+                onmouseover="this.style.background='var(--danger)'; this.style.color='white'; this.style.borderColor='var(--danger)'" 
+                onmouseout="this.style.background='var(--bg-tertiary)'; this.style.color='var(--text-secondary)'; this.style.borderColor='var(--border-color)'">
+                Remover
+              </button>
+            </div>
           <span class="prompt-count" id="promptCount">0 prompts</span>
         </div>
       </div>
