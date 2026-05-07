@@ -47,6 +47,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true;
     }
 
+    // Handle direct download URL (fallback when menu-based download fails)
+    if (message.type === 'downloadUrl' || message.action === 'downloadUrl') {
+        const url = message.url;
+        if (!url) { sendResponse({ success: false, error: 'No url' }); return true; }
+        registerPendingDownload(url, message.fileType || 'image');
+        chrome.downloads.download({
+            url: url,
+            saveAs: false
+        }).then(() => sendResponse({ success: true })).catch(e => sendResponse({ success: false, error: e.message }));
+        return true;
+    }
+
     // Handle main-world React click via chrome.scripting.executeScript
     if (message.action === 'mainWorldReactClick') {
         const tabId = sender.tab?.id;

@@ -1564,9 +1564,17 @@ async function downloadFromImageCard(card, resolution) {
 
     card.setAttribute('data-flow-target-card-img', '1');
     injectStyle();
-    await sleep(600);
+    await sleep(300);
 
-    const norm = (v) => String(v || '').toLowerCase().trim();
+    // Force data-state="open" on all nested spans to trigger React's overlay visibility,
+    // bypassing the need for a real hover event (which CDP might not reliably trigger).
+    const stateSpans = card.querySelectorAll('span[data-state]');
+    for (const span of stateSpans) {
+        if (span.getAttribute('data-state') !== 'open') {
+            span.setAttribute('data-state', 'open');
+        }
+    }
+    await sleep(400);
 
     // Real CDP Hover over the card center to trigger React's hover state
     const rect = card.getBoundingClientRect();
@@ -1575,6 +1583,8 @@ async function downloadFromImageCard(card, resolution) {
     console.log('[Flow Automator] Real CDP Hover at:', Math.round(cx), Math.round(cy));
     await chrome.runtime.sendMessage({ type: 'humanHover', x: cx, y: cy });
     await sleep(800); // Wait for React to render the hover-only buttons
+
+    const norm = (v) => String(v || '').toLowerCase().trim();
 
     const findMoreBtn = () => {
         const buttons = Array.from(card.querySelectorAll('button, [role="button"]'));
@@ -1650,8 +1660,26 @@ async function downloadFromImageCard(card, resolution) {
         return true;
     }
 
+    // Fallback: menu-based download failed. Try direct download from image src.
     removeStyle();
     card.removeAttribute('data-flow-target-card-img');
+
+    const img = card.querySelector(IMAGE_RESULT_SELECTOR) || card.querySelector('img');
+    const imgSrc = (img?.getAttribute('src') || img?.src || '').trim();
+    if (imgSrc) {
+        console.log('[Flow Automator] Falling back to direct download from src:', imgSrc.substring(0, 100));
+        const absoluteUrl = imgSrc.startsWith('/') ? 'https://labs.google' + imgSrc : imgSrc;
+        chrome.runtime.sendMessage({
+            action: 'registerDownload',
+            url: absoluteUrl,
+            type: 'image'
+        });
+        await sleep(300);
+        chrome.runtime.sendMessage({ type: 'downloadUrl', url: absoluteUrl });
+        await sleep(500);
+        return true;
+    }
+
     return false;
 }
 
