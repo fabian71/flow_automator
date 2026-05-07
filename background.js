@@ -63,6 +63,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true;
     }
 
+    // Handle direct CDP click by coordinates
+    if (message.type === 'humanHover') {
+        const tabId = sender.tab?.id;
+        if (!tabId) { sendResponse({ success: false, error: 'No tab' }); return true; }
+        mainWorldCdpHover(tabId, message.x, message.y).then(result => sendResponse(result));
+        return true;
+    }
+    if (message.type === 'humanClick') {
+        const tabId = sender.tab?.id;
+        if (!tabId) { sendResponse({ success: false, error: 'No tab' }); return true; }
+        mainWorldCdpClick(tabId, message.x, message.y).then(result => sendResponse(result));
+        return true;
+    }
+
+    // Handle main-world Enter key press
+    if (message.action === 'mainWorldPressEnter') {
+        const tabId = sender.tab?.id;
+        if (!tabId) { sendResponse({ success: false, error: 'No tab' }); return true; }
+        mainWorldPressEnter(tabId).then(result => sendResponse(result));
+        return true;
+    }
+
     // Handle main-world settings selection (mode, ratio, model, quantity)
     if (message.action === 'mainWorldSelectSettings') {
         const tabId = sender.tab?.id;
@@ -100,182 +122,346 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ===== Main World React Click (afHumanClick approach from working extension) =====
 // Key insight: pointer events MUST include clientX/clientY or Radix ignores them.
+// ===== Main World React Click (Improved Sequence) =====
 async function mainWorldReactClick(tabId, xpath) {
+    const target = { tabId };
     try {
         const results = await chrome.scripting.executeScript({
-            target: { tabId },
+            target,
             world: 'MAIN',
             func: (xpathStr) => {
                 const el = document.evaluate(xpathStr, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-                if (!el) return { success: false, reason: 'not found: ' + xpathStr };
+                if (!el) return { success: false, reason: 'not_found' };
+                
+                // Scroll into view
+                el.scrollIntoView({ block: 'center', inline: 'center' });
+                
+                const rect = el.getBoundingClientRect();
+                const x = rect.left + rect.width / 2;
+                const y = rect.top + rect.height / 2;
+                const opts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
 
+                // Event sequence from reference extension (page-hook.js:3591 pointerClick)
                 try {
-                    const rect = el.getBoundingClientRect();
-                    const x = rect.left + Math.max(6, Math.min(rect.width - 6, rect.width * 0.5));
-                    const y = rect.top + Math.max(6, Math.min(rect.height - 6, rect.height * 0.5));
-                    const common = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
-
-                    let pointerDownPrevented = false;
-                    try {
-                        el.dispatchEvent(new PointerEvent('pointerover', common));
-                        el.dispatchEvent(new PointerEvent('pointermove', common));
-                        const pDown = new PointerEvent('pointerdown', common);
-                        el.dispatchEvent(pDown);
-                        pointerDownPrevented = pDown.defaultPrevented;
-                    } catch (_) { }
-
-                    el.dispatchEvent(new MouseEvent('mouseover', common));
-                    el.dispatchEvent(new MouseEvent('mousemove', common));
-                    el.dispatchEvent(new MouseEvent('mousedown', common));
-                    el.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
-
-                    try { el.dispatchEvent(new PointerEvent('pointerup', common)); } catch (_) { }
-                    el.dispatchEvent(new MouseEvent('mouseup', common));
-                    if (!pointerDownPrevented) {
-                        el.dispatchEvent(new MouseEvent('click', common));
-                    }
-                    return { success: true, method: 'humanClick', x, y };
-                } catch (e) {
-                    try { el.click(); } catch (_) { }
-                    return { success: true, method: 'native.click.fallback', error: e.message };
+                    el.dispatchEvent(new PointerEvent('pointerover', { ...opts, pointerId: 1 }));
+                    el.dispatchEvent(new PointerEvent('pointermove', { ...opts, pointerId: 1 }));
+                } catch(_) {}
+                
+                const pointerDown = new PointerEvent('pointerdown', { ...opts, pointerId: 1 });
+                el.dispatchEvent(pointerDown);
+                
+                el.dispatchEvent(new MouseEvent('mouseover', opts));
+                el.dispatchEvent(new MouseEvent('mousemove', opts));
+                el.dispatchEvent(new MouseEvent('mousedown', opts));
+                
+                try { el.focus(); } catch(_) {}
+                
+                el.dispatchEvent(new PointerEvent('pointerup', { ...opts, pointerId: 1 }));
+                el.dispatchEvent(new MouseEvent('mouseup', opts));
+                
+                if (!pointerDown.defaultPrevented) {
+                    el.dispatchEvent(new MouseEvent('click', opts));
                 }
+                
+                // Final fallback
+                if (typeof el.click === 'function') el.click();
+                
+                return { success: true, x, y };
             },
             args: [xpath]
         });
-        const result = results?.[0]?.result;
-        console.log('[BG] mainWorldReactClick result:', JSON.stringify(result));
-        return { success: result?.success ?? false, result };
+        return results?.[0]?.result || { success: false };
     } catch (e) {
-        console.error('[BG] mainWorldReactClick error:', e.message);
         return { success: false, error: e.message };
     }
 }
 
-// ===== Main World Text Injection (Slate/Lexical editor.apply() approach) =====
-// Key insight: use the Slate editor's internal apply() to insert text directly,
-// bypassing all event/isTrusted restrictions. Falls back to CDP insertText.
-async function mainWorldFillText(tabId, text) {
+async function mainWorldCdpClick(tabId, x, y) {
+    const target = { tabId };
     try {
-        const results = await chrome.scripting.executeScript({
-            target: { tabId },
+        await chrome.debugger.attach(target, '1.3');
+        const clickParams = { x, y, button: 'left', clickCount: 1, pointerType: 'mouse' };
+        await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+        await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', { ...clickParams, type: 'mousePressed' });
+        await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', { ...clickParams, type: 'mouseReleased' });
+        await chrome.debugger.detach(target);
+        return { success: true, method: 'cdp-direct-click', x, y };
+    } catch (e) {
+        console.warn('[BG] CDP Direct Click failed:', e.message);
+        try { await chrome.debugger.detach(target); } catch (_) { }
+        return { success: false, error: e.message };
+    }
+}
+
+// ===== Direct CDP Hover by Coordinates =====
+async function mainWorldCdpHover(tabId, x, y) {
+    const target = { tabId };
+    try {
+        await chrome.debugger.attach(target, '1.3');
+        await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', { 
+            type: 'mouseMoved', 
+            x: x, 
+            y: y,
+            pointerType: 'mouse'
+        });
+        await chrome.debugger.detach(target);
+        return { success: true, method: 'cdp-direct-hover', x, y };
+    } catch (e) {
+        console.warn('[BG] CDP Direct Hover failed:', e.message);
+        try { await chrome.debugger.detach(target); } catch (_) { }
+        return { success: false, error: e.message };
+    }
+}
+
+// ===== Main World Text Injection (Slate native API via React Fiber) =====
+// Adapted from the working reference extension. Accesses Slate's internal
+// editor object through React Fiber to call insertText() directly.
+// This fires Slate's own onChange listeners, which Flow uses to enable the submit button.
+async function mainWorldFillText(tabId, text) {
+    const target = { tabId };
+    try {
+        const result = await chrome.scripting.executeScript({
+            target,
             world: 'MAIN',
-            func: (promptText) => {
-                // Helper: find Slate editor object from a DOM element's React fiber
-                function isSlateEditor(candidate) {
-                    if (!candidate || typeof candidate !== 'object') return false;
-                    return typeof candidate.insertText === 'function' &&
-                        (typeof candidate.deleteBackward === 'function' || typeof candidate.deleteFragment === 'function');
+            args: [text],
+            func: (value) => {
+                // --- Helper: find best prompt editor (scores by size/visibility) ---
+                function findBestEditor() {
+                    const visible = (el) => {
+                        if (!el || !el.isConnected) return false;
+                        const s = window.getComputedStyle(el);
+                        if (!s || s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+                        const r = el.getBoundingClientRect();
+                        return r.width > 4 && r.height > 4;
+                    };
+                    const candidates = Array.from(document.querySelectorAll(
+                        "textarea, [role='textbox'], [contenteditable='true'], [contenteditable='plaintext-only'], [data-slate-editor='true']"
+                    ))
+                        .filter(el => visible(el) && !el.disabled && !el.readOnly)
+                        .filter(el => {
+                            const label = [el.getAttribute('type'), el.getAttribute('aria-label'), el.getAttribute('placeholder'),
+                                el.getAttribute('name'), el.id, el.className
+                            ].map(v => String(v || '')).join(' ').toLowerCase();
+                            return !/\bsearch\b/.test(label);
+                        })
+                        .map(el => {
+                            const r = el.getBoundingClientRect();
+                            const tag = String(el.tagName || '').toLowerCase();
+                            return { el, score: r.width * r.height + r.bottom + (tag === 'textarea' ? 5000 : 0) };
+                        })
+                        .sort((a, b) => b.score - a.score);
+                    return candidates[0]?.el || null;
                 }
 
-                function findSlateEditorFromEl(el) {
-                    const root = el?.matches?.('[data-slate-editor="true"]') ? el : el?.closest?.('[data-slate-editor="true"]');
-                    if (!root) return null;
-                    const reactKeys = Object.keys(root).filter(k => k.startsWith('__react'));
-                    for (const key of reactKeys) {
-                        const value = root[key];
-                        try {
-                            if (key.startsWith('__reactProps') && isSlateEditor(value?.editor)) return value.editor;
-                        } catch (_) { }
-                        // Fiber walk
-                        const stack = [value];
-                        const visited = new Set();
-                        let scanned = 0;
-                        while (stack.length > 0 && scanned < 4000) {
+                // --- Helper: find Slate editor object via React Fiber ---
+                function findSlateEditorObject(root) {
+                    const slateRoot = root?.matches?.("[data-slate-editor='true']")
+                        ? root
+                        : root?.closest?.("[data-slate-editor='true']");
+                    if (!slateRoot) return null;
+                    for (const key of Object.keys(slateRoot).filter((k) => k.startsWith('__react'))) {
+                        const stack = [slateRoot[key]];
+                        const seen = new Set();
+                        let guard = 0;
+                        while (stack.length && guard < 4000) {
+                            guard++;
                             const node = stack.pop();
-                            if (!node || (typeof node !== 'object' && typeof node !== 'function') || visited.has(node)) continue;
-                            visited.add(node);
-                            scanned++;
+                            if (!node || typeof node !== 'object' || seen.has(node)) continue;
+                            seen.add(node);
                             const candidates = [
-                                node?.memoizedProps?.editor, node?.memoizedState?.editor,
-                                node?.pendingProps?.editor, node?.stateNode?.editor, node?.editor
+                                node.memoizedProps?.editor,
+                                node.memoizedProps?.node,
+                                node.memoizedState?.editor,
+                                node.pendingProps?.editor,
+                                node.stateNode?.editor,
+                                node.editor
                             ];
-                            for (const c of candidates) if (isSlateEditor(c)) return c;
+                            const editor = candidates.find((c) =>
+                                c && typeof c === 'object' &&
+                                Array.isArray(c.children) &&
+                                (typeof c.insertText === 'function' || typeof c.apply === 'function')
+                            );
+                            if (editor) return editor;
                             if (node.child) stack.push(node.child);
                             if (node.sibling) stack.push(node.sibling);
                             if (node.return) stack.push(node.return);
+                            if (node.alternate) stack.push(node.alternate);
                         }
                     }
                     return null;
                 }
 
-                // Find the editor element
-                const slateEl = document.querySelector('[data-slate-editor="true"]') ||
-                    document.querySelector('[role="textbox"][contenteditable="true"]') ||
-                    document.querySelector('[role="textbox"]');
-                if (!slateEl) return { success: false, reason: 'editor element not found' };
+                // --- Helper: collect text from Slate node tree ---
+                function collectSlateText(node, out = []) {
+                    if (!node || typeof node !== 'object') return out;
+                    if (typeof node.text === 'string') out.push(node.text);
+                    if (Array.isArray(node.children)) node.children.forEach((c) => collectSlateText(c, out));
+                    return out;
+                }
 
-                // Try Slate editor.apply() approach (most reliable)
-                const editor = findSlateEditorFromEl(slateEl);
-                if (editor) {
+                // --- Helper: mark React receivedUserInput ref ---
+                function markReceivedUserInput(el) {
+                    const fiberKey = Object.keys(el).find((k) => k.startsWith('__reactFiber'));
+                    if (!fiberKey) return;
+                    for (let fiber = el[fiberKey], depth = 0; fiber && depth < 50; depth++, fiber = fiber.return) {
+                        const ref = fiber.memoizedProps?.receivedUserInput;
+                        if (ref && typeof ref === 'object' && 'current' in ref) ref.current = true;
+                    }
+                }
+
+                // --- Helper: sync Flow's internal Zustand store ---
+                function syncPromptStore(editorEl, text) {
+                    const fiberKey = Object.keys(editorEl).find((k) => k.startsWith('__reactFiber'));
+                    if (!fiberKey) return false;
+                    for (let fiber = editorEl[fiberKey], depth = 0; fiber && depth < 50; depth++, fiber = fiber.return) {
+                        const store = fiber.memoizedProps?.promptBoxStore;
+                        const setPrompt = store?.getState?.()?.actions?.setPrompt;
+                        if (typeof setPrompt === 'function') {
+                            setPrompt(String(text || ''));
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+
+                // 1. Find editor element (smart: sizes, visibility, filters search inputs)
+                const el = findBestEditor();
+                if (!el) return { success: false, error: 'editor_not_found' };
+
+                // 2. Scroll + focus
+                el.scrollIntoView({ block: 'center' });
+                el.focus();
+
+                // 3. Get Slate editor object
+                const slateEditor = findSlateEditorObject(el);
+                if (slateEditor) {
                     try {
-                        slateEl.focus();
-                        // Clear existing text
-                        const existingText = String(editor?.children?.[0]?.children?.[0]?.text || '');
-                        if (existingText) {
-                            try { editor.apply({ type: 'remove_text', path: [0, 0], offset: 0, text: existingText }); } catch (_) { }
-                        }
-                        // Insert new text
-                        editor.apply({ type: 'insert_text', path: [0, 0], offset: 0, text: promptText });
-                        if (typeof editor.onChange === 'function') editor.onChange();
-                        slateEl.dispatchEvent(new Event('input', { bubbles: true }));
-                        slateEl.dispatchEvent(new Event('change', { bubbles: true }));
+                        // Clear existing text via Slate API
+                        const existingText = String(slateEditor?.children?.[0]?.children?.[0]?.text || '');
+                        const range = { anchor: { path: [0, 0], offset: 0 }, focus: { path: [0, 0], offset: existingText.length } };
+                        if (typeof slateEditor.select === 'function') slateEditor.select(range);
+                        if (typeof slateEditor.deleteFragment === 'function') slateEditor.deleteFragment();
 
-                        // Verify
-                        const committed = String(editor?.children?.[0]?.children?.[0]?.text || '');
-                        if (committed.includes(promptText.slice(0, 20))) {
-                            return { success: true, method: 'slate.apply', length: committed.length };
+                        // Insert text via Slate's native API (fires onChange, enables submit button)
+                        if (typeof slateEditor.insertText === 'function') {
+                            slateEditor.insertText(value);
+                        } else if (typeof slateEditor.apply === 'function') {
+                            slateEditor.apply({ type: 'insert_text', path: [0, 0], offset: 0, text: value });
                         }
+                        if (typeof slateEditor.onChange === 'function') slateEditor.onChange();
+
+                        // Mark user interaction
+                        markReceivedUserInput(el);
+
+                        // Sync Flow's internal Zustand store as extra safety
+                        syncPromptStore(el, value);
+
+                        // Notify React
+                        el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertReplacementText', data: null }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                        try {
+                            el.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true, cancelable: true, composed: true }));
+                        } catch (_) {}
+
+                        const persisted = collectSlateText(slateEditor.children?.[0] || {}, []).join('');
+                        return { success: true, method: 'slate.insertText', length: persisted.length };
                     } catch (e) {
-                        console.warn('slate.apply failed:', e.message);
+                        return { success: false, error: 'slate_insert_failed: ' + e.message };
                     }
                 }
 
-                // Fallback: execCommand in main world context
+                // Fallback: execCommand (legacy)
                 try {
-                    slateEl.focus();
+                    el.focus();
                     document.execCommand('selectAll', false, null);
-                    document.execCommand('delete', false, null);
-                    slateEl.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: promptText, bubbles: true, cancelable: true }));
-                    const inserted = document.execCommand('insertText', false, promptText);
-                    if (inserted) {
-                        slateEl.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: promptText, bubbles: true }));
-                        return { success: true, method: 'execCommand', length: slateEl.textContent?.length };
-                    }
-                } catch (e2) { }
-
-                return { success: false, reason: 'all methods failed' };
-            },
-            args: [text]
-        });
-        const result = results?.[0]?.result;
-        console.log('[BG] mainWorldFillText result:', JSON.stringify(result));
-        if (result?.success) return { success: true, result };
-
-        // Final fallback: CDP Input.insertText
-        const target = { tabId };
-        try {
-            await chrome.scripting.executeScript({
-                target: { tabId }, world: 'MAIN',
-                func: () => {
-                    const el = document.querySelector('[data-slate-editor="true"], [role="textbox"]');
-                    if (el) { el.focus(); document.execCommand('selectAll', false, null); document.execCommand('delete', false, null); }
+                    document.execCommand('insertText', false, value);
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    return { success: true, method: 'execCommand.insertText', length: value.length };
+                } catch (e) {
+                    return { success: false, error: 'execCommand_failed: ' + e.message };
                 }
-            });
-            await new Promise(r => setTimeout(r, 100));
-            await chrome.debugger.attach(target, '1.3');
-            await chrome.debugger.sendCommand(target, 'Input.insertText', { text });
-            await chrome.debugger.detach(target);
-            return { success: true, method: 'cdp-insertText' };
-        } catch (e2) {
-            try { await chrome.debugger.detach(target); } catch (_) { }
-            return { success: false, error: e2.message };
-        }
+            }
+        });
+
+        const r = result[0]?.result;
+        console.log('[BG] mainWorldFillText result:', JSON.stringify(r));
+        return r || { success: false, error: 'no_result' };
     } catch (e) {
         console.error('[BG] mainWorldFillText error:', e.message);
         return { success: false, error: e.message };
     }
 }
 
+
+
+
+
+
+// Simulates Enter key on the editor using CDP (indistinguishable from real keyboard)
+async function mainWorldPressEnter(tabId) {
+    const target = { tabId };
+    try {
+        // First ensure focus via MAIN world
+        await chrome.scripting.executeScript({
+            target,
+            world: 'MAIN',
+            func: () => {
+                const el = document.querySelector('[data-slate-editor="true"]') ||
+                    document.querySelector('[role="textbox"][contenteditable="true"]') ||
+                    document.querySelector('[role="textbox"]');
+                if (el) {
+                    el.focus();
+                    // Scroll to it too
+                    el.scrollIntoView({ block: 'center' });
+                }
+            }
+        });
+
+        await chrome.debugger.attach(target, '1.3');
+        // Press Enter
+        await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
+            type: 'rawKeyDown',
+            windowsVirtualKeyCode: 13,
+            unmodifiedText: '\r',
+            text: '\r'
+        });
+        await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
+            type: 'keyUp',
+            windowsVirtualKeyCode: 13,
+            unmodifiedText: '\r',
+            text: '\r'
+        });
+        await chrome.debugger.detach(target);
+        return { success: true, method: 'cdp-Enter' };
+    } catch (e) {
+        console.warn('[BG] CDP Enter failed, trying JS fallback:', e.message);
+        try { await chrome.debugger.detach(target); } catch (_) { }
+        
+        // JS Fallback
+        try {
+            const results = await chrome.scripting.executeScript({
+                target,
+                world: 'MAIN',
+                func: () => {
+                    const el = document.querySelector('[data-slate-editor="true"]') ||
+                        document.querySelector('[role="textbox"][contenteditable="true"]') ||
+                        document.querySelector('[role="textbox"]');
+                    if (!el) return false;
+                    el.focus();
+                    const common = { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 };
+                    el.dispatchEvent(new KeyboardEvent('keydown', common));
+                    el.dispatchEvent(new KeyboardEvent('keypress', common));
+                    el.dispatchEvent(new KeyboardEvent('keyup', common));
+                    return true;
+                }
+            });
+            return { success: results?.[0]?.result ?? false, method: 'js-events' };
+        } catch (e2) {
+            return { success: false, error: e2.message };
+        }
+    }
+}
 
 
 // ===== Main World Settings Selection =====
@@ -377,6 +563,7 @@ async function mainWorldSelectSettings(tabId, config) {
                         await sleep(250);
 
                         // 2) Open settings panel.
+                        // In the new UI, the settings trigger is often the same as the model dropdown button (has aria-haspopup="menu")
                         const trigger = await waitFor(
                             () => byXPath("//button[descendant::i[normalize-space(text())='crop_16_9' or normalize-space(text())='crop_landscape' or normalize-space(text())='crop_square' or normalize-space(text())='crop_portrait' or normalize-space(text())='crop_9_16']]"),
                             6000,

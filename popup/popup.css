@@ -726,3 +726,10 @@ body {
 .range-slider-min {
   z-index: 1;
 }
+
+/* ===== Remove Prompts Button Hover ===== */
+#removePromptsBtn:hover {
+  background: var(--danger) !important;
+  color: white !important;
+  border-color: var(--danger) !important;
+}

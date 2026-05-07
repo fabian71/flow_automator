@@ -5,16 +5,16 @@ console.log('[Flow Automator] Content script loaded');
 // ===== Selectors for Google Flow =====
 const SELECTORS = {
     PROMPT_TEXTAREA_XPATH: "//div[@role='textbox']",
-    GENERATE_BUTTON_XPATH: "//button[.//i[text()='arrow_forward'] or contains(., 'arrow_forward')]",
+    GENERATE_BUTTON_XPATH: "//button[.//i[normalize-space(text())='arrow_forward'] or (descendant::span[normalize-space(text())='Criar' or normalize-space(text())='Create'] and not(descendant::i[normalize-space(text())='add_2' or normalize-space(text())='add']))]",
     // Settings trigger button confirmed by browser inspection
-    SETTINGS_POPOVER_TRIGGER_XPATH: "//button[descendant::i[text()='crop_16_9' or text()='crop_9_16']]",
+    SETTINGS_POPOVER_TRIGGER_XPATH: "//button[descendant::i[text()='crop_16_9' or text()='crop_9_16' or text()='crop_square']]",
     QUEUE_FULL_POPUP_XPATH: "//li[@data-sonner-toast and .//i[normalize-space(text())='error'] and .//*[contains(., '5')]]",
     PROMPT_POLICY_ERROR_POPUP_XPATH: "//li[@data-sonner-toast and .//i[normalize-space(text())='error'] and not(.//*[contains(., '5')])]",
     START_IMAGE_ADD_BUTTON_XPATH: "//button[.//i[text()='add'] or .//svg]",
     HIDDEN_FILE_INPUT_XPATH: '//input[@type="file"]',
     UPLOAD_SPINNER_XPATH: "//i[contains(text(), 'progress_activity')]",
     OPEN_MEDIA_DIALOG_XPATH: "//div[@role='dialog' and @data-state='open']",
-    MEDIA_DIALOG_UPLOAD_BUTTON_XPATH: "//div[@role='dialog' and @data-state='open']//button[.//i[normalize-space(text())='upload']]"
+    MEDIA_DIALOG_UPLOAD_BUTTON_XPATH: "//div[@role='dialog' and @data-state='open']//button[.//i[normalize-space(text())='upload' or normalize-space(text())='file_upload']]"
 };
 
 const IMAGE_DOWNLOAD_OPTIONS = {
@@ -309,6 +309,15 @@ async function realClickByXPath(xpath) {
     });
 }
 
+async function realPressEnter() {
+    return new Promise(resolve => {
+        chrome.runtime.sendMessage({ action: 'mainWorldPressEnter' }, (res) => {
+            if (chrome.runtime.lastError) console.warn('[Flow Automator] realPressEnter error:', chrome.runtime.lastError.message);
+            resolve(res && res.success);
+        });
+    });
+}
+
 
 // ===== Helper: Wait for Element by XPath =====
 async function waitForElementByXPath(xpath, timeout = 5000) {
@@ -322,37 +331,58 @@ async function waitForElementByXPath(xpath, timeout = 5000) {
     return null;
 }
 
-// ===== Helper: Fill Prompt Input via Main World =====
-// Uses clipboard paste (best for Lexical) executed directly in page main world.
-async function fillPromptInput(promptText) {
-    // First ensure element exists            
-    const input = document.evaluate(SELECTORS.PROMPT_TEXTAREA_XPATH, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-    if (!input) return false;
+// ===== Helper: Find Prompt Editor (scores candidates by size/visibility) =====
+// Avoids picking hidden/disabled editors or search inputs.
+function findPromptEditor() {
+    const isVisible = (el) => {
+        if (!el || !el.isConnected) return false;
+        const style = window.getComputedStyle(el);
+        if (!style || style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 4 && r.height > 4;
+    };
+    const selector = "textarea, [role='textbox'], [contenteditable='true'], [contenteditable='plaintext-only'], [data-slate-editor='true']";
+    const candidates = Array.from(document.querySelectorAll(selector))
+        .filter(el => isVisible(el))
+        .filter(el => !el.disabled && !el.readOnly)
+        .filter(el => {
+            const label = [
+                el.getAttribute('type'),
+                el.getAttribute('aria-label'),
+                el.getAttribute('placeholder'),
+                el.getAttribute('name'),
+                el.id,
+                el.className
+            ].map(v => String(v || '')).join(' ').toLowerCase();
+            return !/\bsearch\b/.test(label);
+        })
+        .map(el => {
+            const rect = el.getBoundingClientRect();
+            const tag = String(el.tagName || '').toLowerCase();
+            const score = rect.width * rect.height + rect.bottom + (tag === 'textarea' ? 5000 : 0);
+            return { element: el, score };
+        })
+        .sort((a, b) => b.score - a.score);
+    return candidates[0]?.element || null;
+}
 
-    // Route through background -> executeScript(world:'MAIN') for reliable Lexical injection
-    return new Promise(resolve => {
-        chrome.runtime.sendMessage({ action: 'mainWorldFillText', text: promptText }, (res) => {
-            if (chrome.runtime.lastError || !res?.success) {
-                console.warn('[Flow Automator] mainWorldFillText failed, using fallback:', chrome.runtime.lastError?.message);
-                // Fallback: old execCommand approach
-                try {
-                    input.focus();
-                    document.execCommand('selectAll', false, null);
-                    document.execCommand('delete', false, null);
-                    input.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: promptText, bubbles: true, cancelable: true }));
-                    document.execCommand('insertText', false, promptText);
-                    input.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: promptText, bubbles: true, cancelable: true }));
-                    resolve(true);
-                } catch (e) {
-                    console.error('[Flow Automator] Fill prompt fallback failed:', e);
-                    resolve(false);
-                }
-            } else {
-                console.log('[Flow Automator] mainWorldFillText result:', JSON.stringify(res));
-                resolve(true);
-            }
-        });
-    });
+// ===== Helper: Fill Prompt Input via Main World =====
+// Delegates entirely to background.js which uses Slate's native API via React Fiber.
+async function fillPromptInput(promptText) {
+    const input = findPromptEditor();
+    if (!input) {
+        console.warn('[Flow Automator] fillPromptInput: editor element not found');
+        return false;
+    }
+
+    // Delegate to background.js (Slate native API via React Fiber)
+    const res = await chrome.runtime.sendMessage({ action: 'mainWorldFillText', text: promptText });
+    if (!res?.success) {
+        console.warn('[Flow Automator] mainWorldFillText failed:', res?.error);
+        return false;
+    }
+    console.log('[Flow Automator] mainWorldFillText result:', JSON.stringify(res));
+    return true;
 }
 
 function normalizePromptText(value) {
@@ -363,7 +393,7 @@ function normalizePromptText(value) {
 }
 
 function isPromptApplied(promptText) {
-    const input = document.evaluate(SELECTORS.PROMPT_TEXTAREA_XPATH, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+    const input = findPromptEditor();
     if (!input) return false;
 
     const expected = normalizePromptText(promptText);
@@ -717,15 +747,35 @@ async function setVideoDuration(duration) {
 function scanExistingUrls(mode) {
     const urls = new Set();
     const selector = mode === 'image' ? IMAGE_RESULT_SELECTOR : VIDEO_RESULT_SELECTOR;
+    
+    // 1. Scan by img/video src
     document.querySelectorAll(selector).forEach(el => {
         const src = (el.getAttribute('src') || '').trim();
         if (src) urls.add(src);
     });
-    // Adicionalmente busca em links de edição que guardam o ID
+
+    // 2. Scan by /edit/ UUIDs (more robust)
+    let idCount = 0;
     document.querySelectorAll('a[href*="/edit/"]').forEach(a => {
-        const parts = a.href.split('/edit/');
-        if (parts.length > 1) urls.add('id:' + parts[1]);
+        const href = a.getAttribute('href') || a.href || '';
+        const match = href.match(/\/edit\/([a-f0-9-]{36})/i);
+        if (match) {
+            urls.add(match[1]);
+            idCount++;
+        }
     });
+
+    // 3. Scan by [data-tile-id] directly (covers cards without media yet)
+    document.querySelectorAll('[data-tile-id]').forEach(el => {
+        const tid = el.getAttribute('data-tile-id');
+        if (tid) {
+            // Flow usually prefixes tile-id with fe_id_...
+            const match = tid.match(/([a-f0-9-]{36})/i);
+            if (match) urls.add(match[1]);
+        }
+    });
+    
+    console.log(`[Flow Automator] scanExistingUrls found ${urls.size} items.`);
     return urls;
 }
 
@@ -818,43 +868,65 @@ async function waitForNewCard(existingUrls, existingCards, timeout, mode) {
     await sleep(2000);
 
     while (Date.now() - startTime < timeout) {
-        // Check for error toasts (Queue Full / Policy)
-        const queueFull = document.evaluate(SELECTORS.QUEUE_FULL_POPUP_XPATH, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-        if (queueFull) throw new Error("A fila esta cheia (QUEUE_FULL)");
-
-        const policyError = document.evaluate(SELECTORS.PROMPT_POLICY_ERROR_POPUP_XPATH, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-        if (policyError) {
-            const errorText = policyError.innerText || policyError.textContent || "Erro deconhecido";
-            throw new Error("Erro do Flow: " + errorText.trim());
+        // Check for error toasts (Queue Full / Policy / Empty Command)
+        const errorToasts = document.querySelectorAll('[data-sonner-toast]');
+        for (const toast of errorToasts) {
+            const icon = toast.querySelector('i');
+            if (icon && icon.textContent.trim() === 'error') {
+                const text = toast.textContent?.trim() || "";
+                if (text.includes('5') || text.toLowerCase().includes('fila')) throw new Error("A fila esta cheia (QUEUE_FULL)");
+                if (text.toLowerCase().includes('comando')) {
+                    // This is handled by the retry logic in processPrompt
+                    throw new Error("Erro do Flow: Você precisa fornecer um comando");
+                }
+                throw new Error("Erro do Flow: " + text);
+            }
         }
 
         // 1. Check for Progress Indicators (reliable "Generating" state)
-        // If we see "Generating", we know we are validly waiting.
-        const progressElements = document.querySelectorAll('[class*="iEQNVH"], [class*="percentage"]');
+        const progressElements = document.querySelectorAll('[class*="percentage"], [class*="status"], [class*="Generating"], [class*="loading"], [class*="iEQNVH"]');
         let isGenerating = false;
         for (const el of progressElements) {
             const text = el.textContent.trim();
-            if (text.match(/^\d+%$/)) {
+            if (text.match(/^\d+%$/) || text.toLowerCase().includes('gerando') || text.toLowerCase().includes('generating') || text.toLowerCase().includes('criando')) {
                 isGenerating = true;
-                updateStatus('Gerando: ' + text);
+                updateStatus('Status detectado: ' + text);
                 break;
             }
         }
 
-        // 2. Scan for NEW Ready Items
+        // 2. Scan for NEW Ready Items (Media UUIDs from /edit/ links)
         let newReadyItem = null;
-        const selector = mode === 'image' ? IMAGE_RESULT_SELECTOR : VIDEO_RESULT_SELECTOR;
-        const candidates = document.querySelectorAll(selector);
+        
+        // Strategy A: UUIDs from Edit Links (Very robust)
+        const editLinks = document.querySelectorAll('a[href*="/edit/"]');
+        for (const link of editLinks) {
+            const href = link.getAttribute('href');
+            const match = href.match(/\/edit\/([a-f0-9-]{36})/i);
+            if (match) {
+                const uuid = match[1];
+                if (!existingUrls.has(uuid)) {
+                    console.log('[Flow Automator] Detectado novo UUID via link:', uuid);
+                    // Prioritize specific card containers (tile-id) over rows (data-index)
+                    const card = link.closest('[data-tile-id]') || link.closest('.sc-5923b123-0') || link.closest('[data-index]') || link.parentElement;
+                    newReadyItem = { card: card, wrapper: card, src: uuid };
+                    break;
+                }
+            }
+        }
 
-        for (const el of candidates) {
-            const src = (el.getAttribute('src') || '').trim();
-            if (src && !existingUrls.has(src)) {
-                // NEW ITEM FOUND!
-                console.log('[Flow Automator] Detectado novo src:', src);
-                // Busca o container mais próximo que represente o card
-                const card = el.closest('[data-index]') || el.closest('[data-tile-id]') || el.closest('.sc-b04ce3b3-0') || el.parentElement;
-                newReadyItem = { card: card, wrapper: card, src };
-                break;
+        // Strategy B: Media URLs (Legacy fallback)
+        if (!newReadyItem) {
+            const selector = mode === 'image' ? IMAGE_RESULT_SELECTOR : VIDEO_RESULT_SELECTOR;
+            const candidates = document.querySelectorAll(selector);
+            for (const el of candidates) {
+                const src = (el.getAttribute('src') || '').trim();
+                if (src && !existingUrls.has(src)) {
+                    console.log('[Flow Automator] Detectado novo src:', src);
+                    const card = el.closest('[data-tile-id]') || el.closest('.sc-5923b123-0') || el.closest('[data-index]') || el.parentElement;
+                    newReadyItem = { card: card, wrapper: card, src };
+                    break;
+                }
             }
         }
 
@@ -904,7 +976,7 @@ function findLatestDownloadableCard(mode) {
 
 async function clickDismissButton() {
     try {
-        const isVisible = (el) => {
+        const isVisibleCheck = (el) => {
             if (!el || !el.isConnected) return false;
             const st = window.getComputedStyle(el);
             if (!st || st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return false;
@@ -913,7 +985,7 @@ async function clickDismissButton() {
         };
 
         const norm = (v) => String(v || '').toLowerCase().trim();
-        const candidates = Array.from(document.querySelectorAll('button,[role="button"]')).filter(isVisible);
+        const candidates = Array.from(document.querySelectorAll('button,[role="button"]')).filter(isVisibleCheck);
 
         const btn = candidates.find((el) => {
             const txt = norm(el.textContent);
@@ -963,6 +1035,12 @@ async function processPrompt(prompt, index, config, image = null) {
     const fallbackPrompt = 'Animate this image with natural cinematic motion, preserving subject identity and scene details.';
     const effectivePrompt = String(prompt || '').trim() || fallbackPrompt;
     console.log('[Flow Automator] Processing prompt via temp logic:', effectivePrompt);
+
+    // Guard against concurrent calls -- a new processPrompt must not start while another is running
+    if (isProcessing) {
+        console.warn('[Flow Automator] Already processing a prompt, ignoring new request');
+        return;
+    }
     isProcessing = true;
     currentPromptText = effectivePrompt;
 
@@ -987,10 +1065,14 @@ async function processPrompt(prompt, index, config, image = null) {
 
         // 1. Determine Mode
         let mode = 'text-to-video';
-        if (image || config.mode === 'image-to-video' || config.mode === 'frames') {
+        if (image) {
             mode = 'image-to-video';
         } else if (config.mode === 'image') {
             mode = 'create-image';
+        } else if (config.mode === 'image-to-video' || config.mode === 'frames') {
+            // Only force image-to-video if no image provided but user explicitly wants that mode 
+            // (e.g. if they already have an image in the slot manually)
+            mode = 'image-to-video';
         }
 
 
@@ -1045,7 +1127,7 @@ async function processPrompt(prompt, index, config, image = null) {
         if (!settingsOk) {
             throw new Error('Falha ao aplicar modo/modelo/proporcao (modelo nao confirmado)');
         }
-        await sleep(500);
+        await sleep(1000); // Wait for settings menu to fully close
 
         // Video-specific: duration setting
         if (mode !== 'create-image' && config.videoDuration) {
@@ -1058,101 +1140,155 @@ async function processPrompt(prompt, index, config, image = null) {
         updateOverlay('Inserindo prompt...');
         const inputSuccess = await ensurePromptInput(effectivePrompt, 3);
         if (!inputSuccess) throw new Error('Falha ao inserir prompt (campo permaneceu vazio)');
-        await sleep(2000);
+        await sleep(1500);
 
-        // 5. Click Generate
+        // 5. Click Generate - wait for arrow_forward button to be enabled (like reference extension)
         updateOverlay('Iniciando geracao...');
-        const generateBtn = await waitForElementByXPath(SELECTORS.GENERATE_BUTTON_XPATH, 2000);
 
-        // Wait specifically for ENABLED button
+        // Verify text is actually in the editor before trying to submit
+        const editorEl = document.querySelector('[data-slate-editor="true"]');
+        const editorText = editorEl ? (editorEl.innerText || editorEl.textContent || '').trim() : '';
+        console.log('[Flow Automator] Editor text after insert:', editorText);
+        if (!editorText) {
+            throw new Error('Editor vazio apos insercao - texto nao foi aceito pelo Slate');
+        }
+
+        // Find generate button: look for arrow_forward icon (not aria-disabled) 
+        // scoped to the editor's parent container
         let enabledGenerateBtn = null;
-        let retries = 20; // 10 seconds (20 * 500ms)
+        let retries = 20;
         while (retries > 0) {
-            const btn = document.evaluate(SELECTORS.GENERATE_BUTTON_XPATH, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-            // Check disabled property AND aria-disabled attribute AND class
-            if (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true' && !btn.classList.contains('disabled')) {
-                enabledGenerateBtn = btn;
-                break;
+            const editorScope = document.querySelector('[data-slate-editor="true"]');
+            let scope = editorScope;
+            // Walk up max 10 levels to find the button near the editor
+            for (let depth = 0; scope && depth < 10; depth++, scope = scope.parentElement) {
+                const buttons = Array.from(scope.querySelectorAll('button, [role="button"]'));
+                const found = buttons.find(b => {
+                    if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+                    const text = (b.textContent || '').trim();
+                    const icon = b.querySelector('i, svg');
+                    const iconText = icon ? (icon.textContent || '').trim() : '';
+                    const ariaLabel = (b.getAttribute('aria-label') || '').toLowerCase();
+                    
+                    return iconText === 'arrow_forward' || 
+                           text === 'Criar' || 
+                           text === 'Create' ||
+                           ariaLabel.includes('gerar') ||
+                           ariaLabel.includes('generate');
+                });
+                if (found) { enabledGenerateBtn = found; break; }
             }
-            // If button exists but is disabled, wait
-            if (btn) {
-                updateOverlay('Aguardando botao Gerar ativar...');
-            }
+            if (enabledGenerateBtn) break;
             await sleep(500);
             retries--;
         }
 
+        if (!enabledGenerateBtn) {
+            console.warn('[Flow Automator] Generate button not found near editor, falling back to global search');
+            enabledGenerateBtn = document.evaluate(SELECTORS.GENERATE_BUTTON_XPATH, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+        }
+
         if (enabledGenerateBtn) {
-            clickElementByXPath(SELECTORS.GENERATE_BUTTON_XPATH);
-            await sleep(1000);
-            console.log('[Flow Automator] Clicked Generate');
+            // MARK the button with a unique attribute to ensure we click the RIGHT one via background
+            const uniqueId = 'btn_' + Date.now();
+            enabledGenerateBtn.setAttribute('data-flow-target-click', uniqueId);
+            const targetXpath = `//*[@data-flow-target-click='${uniqueId}']`;
 
-            // Wait for NEW card (URL based)
-            updateOverlay('Aguardando geracao...');
+            // Re-scan right before clicking to avoid lazy-load race conditions
+            const finalExistingUrls = scanExistingUrls(scanMode);
+            console.log(`[Flow Automator] Final pre-click scan: ${finalExistingUrls.size} items.`);
 
-            // We pass existingUrls. 
-            // Logic: Wait until a URL appears that is NOT in existingUrls.
-            let cardResult = await waitForNewCard(existingUrls, existingCards, config.generationTimeout * 1000, config.mode);
+            let cardResult = null;
+            try {
+                updateOverlay('Iniciando geração...');
+                
+                // 1. Local human events (Pointer/Mouse)
+                try {
+                    const rect = enabledGenerateBtn.getBoundingClientRect();
+                    const x = rect.left + rect.width / 2;
+                    const y = rect.top + rect.height / 2;
+                    const common = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+                    try { enabledGenerateBtn.dispatchEvent(new PointerEvent('pointerdown', common)); } catch (_) { }
+                    enabledGenerateBtn.dispatchEvent(new MouseEvent('mousedown', common));
+                    try { enabledGenerateBtn.dispatchEvent(new PointerEvent('pointerup', common)); } catch (_) { }
+                    enabledGenerateBtn.dispatchEvent(new MouseEvent('mouseup', common));
+                    enabledGenerateBtn.dispatchEvent(new MouseEvent('click', common));
+                } catch (_) { }
+                await sleep(200);
 
-            if (!cardResult) {
-                const fallbackCard = findLatestDownloadableCard(scanMode);
-                if (fallbackCard) {
-                    console.warn('[Flow Automator] waitForNewCard timeout; using fallback latest downloadable card');
-                    cardResult = {
-                        card: fallbackCard,
-                        wrapper: fallbackCard,
-                        src: 'fallback-latest-card'
-                    };
+                // 2. Native click
+                if (typeof enabledGenerateBtn.click === 'function') enabledGenerateBtn.click();
+                await sleep(200);
+
+                // 3. Background click (redundancy)
+                await chrome.runtime.sendMessage({ 
+                    action: 'mainWorldReactClick', 
+                    xpath: targetXpath 
+                });
+                
+                // 4. Press Enter as final fallback
+                await realPressEnter();
+
+                // Cleanup
+                enabledGenerateBtn.removeAttribute('data-flow-target-click');
+                
+                await sleep(2000); // Wait for generation to start 
+                
+                updateOverlay('Aguardando geracao...');
+                cardResult = await waitForNewCard(finalExistingUrls, existingCards, config.generationTimeout * 1000, scanMode);
+            } catch (e) {
+                // Retry specifically for "empty command" error
+                if (e.message.includes('fornecer um comando')) {
+                    console.warn('[Flow Automator] Empty command detected. Retrying...');
+                    // Dismiss the error toast so waitForNewCard doesn't re-detect it
+                    await clickDismissButton();
+                    // Aggressively remove any remaining sonner error toasts from DOM
+                    const errorToasts = document.querySelectorAll('[data-sonner-toast]');
+                    for (const toast of errorToasts) {
+                        const icon = toast.querySelector('i');
+                        if (icon && icon.textContent.trim() === 'error') {
+                            console.warn('[Flow Automator] Force-removing error toast:', toast.textContent?.trim()?.substring(0, 80));
+                            toast.remove();
+                        }
+                    }
+                    await sleep(2000);
+
+                    // Update existing sets in case partial generation occurred
+                    const newUrls = scanExistingUrls(scanMode);
+                    for (const url of newUrls) existingUrls.add(url);
+                    const newCards = scanExistingCards(scanMode);
+                    for (const card of newCards) existingCards.add(card);
+
+                    // Re-fill prompt with full retry attempts
+                    await ensurePromptInput(effectivePrompt, 3);
+                    await sleep(2000);
+                    await realClickByXPath(SELECTORS.GENERATE_BUTTON_XPATH);
+                    await sleep(500);
+                    await realPressEnter();
+                    await sleep(1000);
+                    cardResult = await waitForNewCard(existingUrls, existingCards, config.generationTimeout * 1000, scanMode);
                 } else {
-                    // Determine if it was a timeout or something else
-                    throw new Error('Timeout na geracao');
+                    throw e;
                 }
             }
 
-            console.log('[Flow Automator] Found new', config.mode, 'card');
+            if (!cardResult) throw new Error('Timeout na geracao (card nao apareceu)');
+
+            console.log('[Flow Automator] Found new card');
 
             // Now download...
             updateOverlay('Fazendo download...');
             await sleep(1000);
 
             let downloadSuccess = false;
-
-            if (config.mode === 'image') {
+            if (mode === 'create-image') {
                 downloadSuccess = await downloadFromImageCard(cardResult.wrapper || cardResult.card, config.imageResolution || '2k');
             } else {
                 const desiredVideoRes = normalizeVideoResolution(config.videoResolution || (config.doUpscale ? '1080p' : '720p'));
                 downloadSuccess = await downloadFromVideoCard(cardResult.wrapper || cardResult.card, desiredVideoRes);
             }
 
-            if (!downloadSuccess) {
-                throw new Error('Falha no download');
-            }
-
-            console.log('[Flow Automator] Waiting for download to start...');
-            await sleep(1000);
-
-            // Upscale waits...
-            if (config.mode === 'image' && (config.imageResolution === '2k' || config.imageResolution === '4k')) {
-                updateOverlay('Aguardando upscale (' + config.imageResolution.toUpperCase() + ')...');
-                const upscaleComplete = await waitForUpscaleComplete(300000);
-                if (upscaleComplete) {
-                    await clickDismissButton();
-                    await sleep(1000);
-                }
-            } else if (config.mode === 'image' && config.imageResolution === '1k') {
-                await sleep(1000);
-            }
-
-            const targetVideoRes = normalizeVideoResolution(config.videoResolution || (config.doUpscale ? '1080p' : '720p'));
-            if (config.mode === 'video' && (targetVideoRes === '1080p' || targetVideoRes === '4k') && config.aspectRatio !== '9:16') {
-                updateOverlay('Aguardando upscale (' + targetVideoRes.toUpperCase() + ')...');
-                const upscaleComplete = await waitForUpscaleComplete(300000);
-
-                if (upscaleComplete) {
-                    await clickDismissButton();
-                    await sleep(2000);
-                }
-            }
+            if (!downloadSuccess) throw new Error('Falha no download');
 
             console.log('[Flow Automator] Prompt completed successfully');
             sendComplete(true, null, effectivePrompt);
@@ -1207,22 +1343,24 @@ async function downloadFromVideoCard(card, targetResolution) {
     const iconText = (el) => norm(el?.querySelector('i')?.textContent);
 
     const findMoreBtn = (container = document.body) => {
-        return Array.from(container.querySelectorAll('button, [role="button"]')).find(b => {
-            const iTxt = iconText(b);
+        return Array.from(container.querySelectorAll('button, [role="button"], div')).find(b => {
+            const iTxt = norm(b.querySelector('i')?.textContent);
             const lbl = norm((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('data-tooltip') || ''));
-            const inCard = card.contains(b) || container === card;
-            // Accept even hidden buttons that belong to this card
-            if (!inCard && !isVisible(b)) return false;
-            return iTxt.includes('more_vert') || iTxt.includes('more_horiz') ||
-                lbl.includes('more') || lbl.includes('mais') || lbl.includes('menu');
+            const hasIcon = iTxt.includes('more_vert') || iTxt.includes('more_horiz');
+            const hasLabel = lbl.includes('more') || lbl.includes('mais') || lbl.includes('menu') || lbl.includes('opcoes');
+            return hasIcon || hasLabel;
         });
     };
 
     const findMainMenuWithDownload = () => {
-        const menus = Array.from(document.querySelectorAll('[role="menu"]')).filter(isVisible);
+        const menus = Array.from(document.querySelectorAll('[role="menu"], div[class*="menu-content"]')).filter(isVisible);
         return menus.find(m => {
-            const items = Array.from(m.querySelectorAll('[role="menuitem"]'));
-            return items.some(it => iconText(it).includes('download'));
+            const items = Array.from(m.querySelectorAll('[role="menuitem"], [role="menuitemradio"], div[class*="menuitem"]'));
+            return items.some(it => {
+                const iTxt = norm(it.querySelector('i')?.textContent);
+                const txt = norm(it.textContent);
+                return iTxt.includes('download') || txt.includes('baixar') || txt.includes('download');
+            });
         }) || null;
     };
 
@@ -1235,12 +1373,15 @@ async function downloadFromVideoCard(card, targetResolution) {
         s.textContent = `
             [data-flow-target-card] button,
             [data-flow-target-card] [role="button"],
+            [data-flow-target-card] i,
+            [data-flow-target-card] span,
             [data-flow-target-card] [class*="overlay"],
             [data-flow-target-card] [class*="action"],
             [data-flow-target-card] [class*="menu"] {
                 opacity: 1 !important;
                 visibility: visible !important;
                 pointer-events: auto !important;
+                display: block !important;
             }
         `;
         document.head.appendChild(s);
@@ -1255,14 +1396,25 @@ async function downloadFromVideoCard(card, targetResolution) {
     injectStyle();
     await sleep(300);
 
-    const moreBtn = findMoreBtn(card) || findMoreBtn(document.body);
+    // Real CDP Hover over the card center to trigger React's hover state
+    const rect = card.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    console.log('[Flow Automator] Real CDP Hover (Video) at:', Math.round(cx), Math.round(cy));
+    await chrome.runtime.sendMessage({ type: 'humanHover', x: cx, y: cy });
+    await sleep(800);
+
+    const moreBtn = findMoreBtn(card);
     if (moreBtn) {
-        console.log('[Flow Automator] Found 3-dots button via CSS injection, clicking...');
-        reactClick(moreBtn);
-        await sleep(600);
+        console.log('[Flow Automator] Found 3-dots button, clicking via CDP...');
+        const btnRect = moreBtn.getBoundingClientRect();
+        const bx = btnRect.left + btnRect.width / 2;
+        const by = btnRect.top + btnRect.height / 2;
+        await chrome.runtime.sendMessage({ type: 'humanClick', x: bx, y: by });
+        await sleep(1000);
         mainMenu = findMainMenuWithDownload();
     } else {
-        console.log('[Flow Automator] 3-dots button not found even with CSS injection');
+        console.log('[Flow Automator] 3-dots button not found after hover');
     }
 
     // Always clean up
@@ -1332,10 +1484,10 @@ async function downloadFromVideoCard(card, targetResolution) {
         return null;
     };
 
-    const resMenu = Array.from(document.querySelectorAll('[role=\"menu\"]'))
+    const resMenu = Array.from(document.querySelectorAll('[role="menu"]'))
         .filter(isVisible)
         .find(m => {
-            const items = Array.from(m.querySelectorAll('[role=\"menuitem\"]'));
+            const items = Array.from(m.querySelectorAll('[role="menuitem"]'));
             return items.some(it => parseResolution(it.textContent));
         });
     if (!resMenu) {
@@ -1343,7 +1495,7 @@ async function downloadFromVideoCard(card, targetResolution) {
         return false;
     }
 
-    const items = Array.from(resMenu.querySelectorAll('[role=\"menuitem\"]')).map(el => ({
+    const items = Array.from(resMenu.querySelectorAll('[role="menuitem"]')).map(el => ({
         el,
         res: parseResolution(el.textContent),
         disabled: el.getAttribute('aria-disabled') === 'true'
@@ -1383,107 +1535,127 @@ async function downloadFromVideoCard(card, targetResolution) {
 
 // ===== Download image from a specific card =====
 async function downloadFromImageCard(card, resolution) {
-    console.log('[Flow Automator] Iniciando download via Menu de Contexto...');
-    updateOverlay('Preparando card para download...');
+    console.log('[Flow Automator] Iniciando download de imagem...');
+    updateOverlay('Preparando download...');
 
-    const img = card.querySelector(IMAGE_RESULT_SELECTOR);
-    if (!img) {
-        console.log('[Flow Automator] Erro: img não encontrada no card');
-        return false;
+    card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    // CSS injection trick to force buttons visible
+    const injectStyle = () => {
+        const s = document.createElement('style');
+        s.id = '__flow_hover_fix_img__';
+        s.textContent = `
+            [data-flow-target-card-img] button,
+            [data-flow-target-card-img] [role="button"],
+            [data-flow-target-card-img] i,
+            [data-flow-target-card-img] span,
+            [data-flow-target-card-img] [class*="overlay"] {
+                opacity: 1 !important;
+                visibility: visible !important;
+                display: flex !important;
+                pointer-events: auto !important;
+            }
+        `;
+        document.head.appendChild(s);
+    };
+    const removeStyle = () => {
+        const s = document.getElementById('__flow_hover_fix_img__');
+        if (s) s.remove();
+    };
+
+    card.setAttribute('data-flow-target-card-img', '1');
+    injectStyle();
+    await sleep(600);
+
+    const norm = (v) => String(v || '').toLowerCase().trim();
+
+    // Real CDP Hover over the card center to trigger React's hover state
+    const rect = card.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    console.log('[Flow Automator] Real CDP Hover at:', Math.round(cx), Math.round(cy));
+    await chrome.runtime.sendMessage({ type: 'humanHover', x: cx, y: cy });
+    await sleep(800); // Wait for React to render the hover-only buttons
+
+    const findMoreBtn = () => {
+        const buttons = Array.from(card.querySelectorAll('button, [role="button"]'));
+        if (buttons.length > 0) {
+            console.log('[Flow Automator] Botoes encontrados no card:', buttons.map(b => (b.textContent || b.getAttribute('aria-label') || 'unlabeled').trim()).join(' | '));
+        }
+        
+        // 1. Look for 'more' in text or label
+        let btn = buttons.find(b => {
+            const txt = norm(b.textContent + ' ' + (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('data-tooltip') || ''));
+            const iconText = norm(b.querySelector('i')?.textContent || '');
+            return txt.includes('more') || txt.includes('mais') || iconText.includes('more') || txt.includes('opções') || txt.includes('options');
+        });
+        if (btn) return btn;
+
+        // 2. Look for any button with an icon that looks like 3 dots (vertical or horizontal)
+        btn = buttons.find(b => {
+            const icon = b.querySelector('i, svg, span[class*="icon"]');
+            if (!icon) return false;
+            const itxt = norm(icon.textContent);
+            return itxt.includes('more_') || itxt.includes('dots');
+        });
+        
+        return btn;
+    };
+
+    let moreBtn = findMoreBtn();
+    if (moreBtn) {
+        console.log('[Flow Automator] Encontrado botao de menu no card, clicando via CDP...');
+        const btnRect = moreBtn.getBoundingClientRect();
+        const bx = btnRect.left + btnRect.width / 2;
+        const by = btnRect.top + btnRect.height / 2;
+        await chrome.runtime.sendMessage({ type: 'humanClick', x: bx, y: by });
+        await sleep(1000);
+    } else {
+        console.log('[Flow Automator] Botao de menu nao encontrado apos hover, tentando clique direito...');
+        const img = card.querySelector(IMAGE_RESULT_SELECTOR) || card.querySelector('img');
+        if (img) rightClick(img);
+        await sleep(1000);
     }
 
-    // Garante que o card esteja visível e em foco (hover simulado)
-    img.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    img.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    await sleep(500);
-
-    // Tenta clique direito para abrir o menu
-    console.log('[Flow Automator] Disparando clique direito na imagem...');
-    rightClick(img);
-    await sleep(1000);
-
-    // Busca a opção "Baixar" - agnóstico a idioma usando o ícone se possível
-    let menuItems = document.querySelectorAll('[role="menuitem"], [role="menuitemradio"]');
+    // Now look for download in the menu (portal at end of body)
+    let menuItems = document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], div[class*="menuitem"]');
     let downloadOption = Array.from(menuItems).find(i => {
-        const text = i.textContent.toLowerCase();
-        const icon = i.querySelector('i');
-        const iconText = (icon?.textContent || '').toLowerCase();
-        // Verifica texto em PT/EN ou o ícone do sistema
-        return text.includes('baixar') || text.includes('download') || iconText.includes('download');
+        const text = norm(i.textContent);
+        const iTxt = norm(i.querySelector('i')?.textContent);
+        return text.includes('baixar') || text.includes('download') || iTxt.includes('download');
     });
 
     if (!downloadOption) {
-        console.log('[Flow Automator] Menu de contexto não apareceu. Tentando via botão Mais/More...');
-        // O botão de 3 pontinhos só aparece com o foco, vamos tentar achar ele agora que demos mouseenter
-        const moreBtn = Array.from(card.querySelectorAll('button')).find(b => {
-            const i = b.querySelector('i');
-            const tooltip = (b.getAttribute('data-tooltip') || b.getAttribute('aria-label') || '').toLowerCase();
-            return (i && (i.textContent.includes('more_vert') || i.textContent.includes('more_horiz'))) || tooltip.includes('mais') || tooltip.includes('more');
-        });
-        if (moreBtn) {
-            reactClick(moreBtn);
-            await sleep(1000);
-            menuItems = document.querySelectorAll('[role="menuitem"], [role="menuitemradio"]');
-            downloadOption = Array.from(menuItems).find(i => {
-                const text = i.textContent.toLowerCase();
-                const icon = i.querySelector('i');
-                const iconText = (icon?.textContent || '').toLowerCase();
-                return text.includes('baixar') || text.includes('download') || iconText.includes('download');
-            });
-        }
-    }
-
-    if (!downloadOption) {
-        updateOverlay('Erro: Menu de download não encontrado');
+        removeStyle();
+        card.removeAttribute('data-flow-target-card-img');
         return false;
     }
 
-    // Abre o submenu de resoluções
-    updateOverlay('Selecionando resolução...');
+    // Resolucao
     reactClick(downloadOption);
-    await sleep(1200);
+    await sleep(800);
 
-    // Busca as opções (1K, 2K, 4K)
-    const targets = IMAGE_DOWNLOAD_OPTIONS[resolution] || IMAGE_DOWNLOAD_OPTIONS['2k'];
-    menuItems = document.querySelectorAll('[role="menuitem"], [role="menuitemradio"]');
+    // Options: 1k, 2k, 4k
+    const targets = (IMAGE_DOWNLOAD_OPTIONS[resolution] || IMAGE_DOWNLOAD_OPTIONS['2k']).map(t => t.toLowerCase());
+    menuItems = document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], .sc-16c4830a-1');
+    const option = Array.from(menuItems).find(it => {
+        const txt = norm(it.textContent);
+        return targets.some(t => txt.includes(t));
+    });
 
-    let resolutionItem = null;
-    for (const item of menuItems) {
-        const text = item.textContent.toUpperCase();
-        // Busca direta pelo texto da resolução (agnóstico a palavras extras)
-        if (text.includes(resolution.toUpperCase())) {
-            resolutionItem = item;
-            break;
-        }
-    }
-
-    // Fallback por posição se não achar o texto exato
-    if (!resolutionItem && menuItems.length > 0) {
-        console.log('[Flow Automator] Seleção exata falhou, tentando por fallback de texto...');
-        resolutionItem = Array.from(menuItems).find(i => targets.some(t => i.textContent.toLowerCase().includes(t.toLowerCase())));
-    }
-
-    if (resolutionItem) {
-        console.log('[Flow Automator] Registrando download para o prompt atual...');
-        const mediaSrc = img.getAttribute('src');
-        chrome.runtime.sendMessage({
-            action: 'registerDownload',
-            url: mediaSrc,
-            type: 'image',
-            resolution: resolution
-        });
-
-        console.log('[Flow Automator] Clicando na resolução:', resolutionItem.textContent.trim());
-        reactClick(resolutionItem);
-
-        if (resolution === '1k') {
-            await sleep(1000);
-        }
+    if (option) {
+        reactClick(option);
+        await sleep(500);
+        removeStyle();
+        card.removeAttribute('data-flow-target-card-img');
         return true;
     }
 
+    removeStyle();
+    card.removeAttribute('data-flow-target-card-img');
     return false;
 }
+
+
 
 // ===== DOM Interaction Functions =====
 async function waitForPageReady() {
