@@ -1413,6 +1413,15 @@ async function downloadFromVideoCard(card, targetResolution) {
     injectStyle();
     await sleep(300);
 
+    // Force data-state="open" on nested spans (same as image — bypass hover requirement)
+    const stateSpans = card.querySelectorAll('span[data-state]');
+    for (const span of stateSpans) {
+        if (span.getAttribute('data-state') !== 'open') {
+            span.setAttribute('data-state', 'open');
+        }
+    }
+    await sleep(400);
+
     // Real CDP Hover over the card center to trigger React's hover state
     const rect = card.getBoundingClientRect();
     const cx = rect.left + rect.width / 2;
@@ -1471,7 +1480,8 @@ async function downloadFromVideoCard(card, targetResolution) {
 
     if (!mainMenu) {
         console.log('[Flow Automator] Main context menu not found');
-        return false;
+        // Fallback: direct download from video src
+        return await fallbackDownloadVideo(card, videoUrl);
     }
 
     const downloadEntry = Array.from(mainMenu.querySelectorAll('[role="menuitem"]')).find(it => {
@@ -1482,7 +1492,7 @@ async function downloadFromVideoCard(card, targetResolution) {
     });
     if (!downloadEntry) {
         console.log('[Flow Automator] Download entry not found in context menu');
-        return false;
+        return await fallbackDownloadVideo(card, videoUrl);
     }
 
     // 3) Open download submenu (hover + click, because Radix may require pointer intent)
@@ -1509,7 +1519,7 @@ async function downloadFromVideoCard(card, targetResolution) {
         });
     if (!resMenu) {
         console.log('[Flow Automator] Resolution submenu not found');
-        return false;
+        return await fallbackDownloadVideo(card, videoUrl);
     }
 
     const items = Array.from(resMenu.querySelectorAll('[role="menuitem"]')).map(el => ({
@@ -1519,7 +1529,7 @@ async function downloadFromVideoCard(card, targetResolution) {
     })).filter(x => x.res);
     if (!items.length) {
         console.log('[Flow Automator] No resolution options found');
-        return false;
+        return await fallbackDownloadVideo(card, videoUrl);
     }
 
     const preferred = normalizeVideoResolution(targetResolution);
@@ -1541,13 +1551,58 @@ async function downloadFromVideoCard(card, targetResolution) {
     }
     if (!chosen) {
         console.log('[Flow Automator] All resolution options are disabled');
-        return false;
+        return await fallbackDownloadVideo(card, videoUrl);
     }
 
     console.log('[Flow Automator] Clicking video resolution:', chosen.res);
     reactClick(chosen.el);
     await sleep(500);
     return true;
+}
+
+// Fallback: download video directly from video src (when menu-based download fails)
+async function fallbackDownloadVideo(card, videoUrl) {
+    console.log('[Flow Automator] Falling back to direct video download...');
+    const doDownload = (url) => {
+        // Resolve: can be a redirect URL or a direct URL
+        const absolute = url.startsWith('/') ? 'https://labs.google' + url : url;
+        chrome.runtime.sendMessage({ action: 'registerDownload', url: absolute, type: 'video' });
+        sleep(300).then(() => {
+            chrome.runtime.sendMessage({ type: 'downloadUrl', url: absolute, fileType: 'video' });
+        });
+        return absolute;
+    };
+
+    if (videoUrl) {
+        console.log('[Flow Automator] Using existing video URL:', videoUrl.substring(0, 80));
+        doDownload(videoUrl);
+        await sleep(800);
+        return true;
+    }
+    // Wait for the video element to render and get a src (up to 15s, video encoding takes time)
+    for (let attempt = 0; attempt < 15; attempt++) {
+        await sleep(1000);
+        const video = card.querySelector('video');
+        const src = video ? (video.getAttribute('src') || video.src || '').trim() : '';
+        if (src) {
+            console.log('[Flow Automator] Video src appeared after ' + (attempt + 1) + 's:', src.substring(0, 80));
+            doDownload(src);
+            await sleep(800);
+            return true;
+        }
+        updateOverlay('Aguardando video renderizar... (' + (attempt + 1) + 's)');
+    }
+    // Last attempt: try img src from card (Flow shows video thumbnails as imgs with redirect URLs)
+    const img = card.querySelector('img');
+    const imgSrc = (img?.getAttribute('src') || img?.src || '').trim();
+    if (imgSrc && imgSrc.includes('getMediaUrlRedirect')) {
+        console.log('[Flow Automator] Using image redirect URL for video:', imgSrc.substring(0, 80));
+        doDownload(imgSrc);
+        await sleep(800);
+        return true;
+    }
+    console.log('[Flow Automator] No video src found after waiting. Download fallback failed.');
+    return false;
 }
 
 // ===== Download image from a specific card =====
