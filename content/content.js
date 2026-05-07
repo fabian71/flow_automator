@@ -1560,48 +1560,54 @@ async function downloadFromVideoCard(card, targetResolution) {
     return true;
 }
 
-// Fallback: download video directly from video src (when menu-based download fails)
+// Fallback: download video directly (when menu-based download fails)
+// Videos in the grid show as thumbnail <img> tags, not <video> elements.
 async function fallbackDownloadVideo(card, videoUrl) {
     console.log('[Flow Automator] Falling back to direct video download...');
-    const doDownload = (url) => {
-        // Resolve: can be a redirect URL or a direct URL
+    const doDownload = async (url, label) => {
+        console.log('[Flow Automator] Using ' + label + ':', url.substring(0, 80));
         const absolute = url.startsWith('/') ? 'https://labs.google' + url : url;
         chrome.runtime.sendMessage({ action: 'registerDownload', url: absolute, type: 'video' });
-        sleep(300).then(() => {
-            chrome.runtime.sendMessage({ type: 'downloadUrl', url: absolute, fileType: 'video' });
-        });
-        return absolute;
+        await sleep(300);
+        chrome.runtime.sendMessage({ type: 'downloadUrl', url: absolute, fileType: 'video' });
+        await sleep(500);
+        return true;
     };
 
+    // 1. Try existing videoUrl first
     if (videoUrl) {
-        console.log('[Flow Automator] Using existing video URL:', videoUrl.substring(0, 80));
-        doDownload(videoUrl);
-        await sleep(800);
-        return true;
+        return await doDownload(videoUrl, 'existing video URL');
     }
-    // Wait for the video element to render and get a src (up to 15s, video encoding takes time)
-    for (let attempt = 0; attempt < 15; attempt++) {
-        await sleep(1000);
-        const video = card.querySelector('video');
-        const src = video ? (video.getAttribute('src') || video.src || '').trim() : '';
-        if (src) {
-            console.log('[Flow Automator] Video src appeared after ' + (attempt + 1) + 's:', src.substring(0, 80));
-            doDownload(src);
-            await sleep(800);
-            return true;
-        }
-        updateOverlay('Aguardando video renderizar... (' + (attempt + 1) + 's)');
-    }
-    // Last attempt: try img src from card (Flow shows video thumbnails as imgs with redirect URLs)
+
+    // 2. Try img redirect URL (Flow grid shows video thumbnails as <img> with getMediaUrlRedirect)
     const img = card.querySelector('img');
     const imgSrc = (img?.getAttribute('src') || img?.src || '').trim();
     if (imgSrc && imgSrc.includes('getMediaUrlRedirect')) {
-        console.log('[Flow Automator] Using image redirect URL for video:', imgSrc.substring(0, 80));
-        doDownload(imgSrc);
-        await sleep(800);
-        return true;
+        return await doDownload(imgSrc, 'image redirect URL');
     }
-    console.log('[Flow Automator] No video src found after waiting. Download fallback failed.');
+
+    // 3. Wait a bit then retry img src and video element (video encoding takes time)
+    for (let attempt = 0; attempt < 10; attempt++) {
+        await sleep(2000);
+        // Re-check img src (might have updated)
+        const img2 = card.querySelector('img');
+        const imgSrc2 = (img2?.getAttribute('src') || img2?.src || '').trim();
+        if (imgSrc2 && imgSrc2 !== imgSrc) {
+            if (imgSrc2.includes('getMediaUrlRedirect')) {
+                return await doDownload(imgSrc2, 'image redirect URL (retry ' + (attempt + 1) + ')');
+            }
+            return await doDownload(imgSrc2, 'image src (retry ' + (attempt + 1) + ')');
+        }
+        // Check for video element
+        const video = card.querySelector('video');
+        const src = video ? (video.getAttribute('src') || video.src || '').trim() : '';
+        if (src) {
+            return await doDownload(src, 'video src (retry ' + (attempt + 1) + ')');
+        }
+        updateOverlay('Aguardando video renderizar... (' + (attempt + 1) + 's)');
+    }
+
+    console.log('[Flow Automator] No video/download URL found after waiting.');
     return false;
 }
 
