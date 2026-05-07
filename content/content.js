@@ -877,8 +877,20 @@ async function waitForNewCard(existingUrls, existingCards, timeout, mode) {
                 const text = toast.textContent?.trim() || "";
                 if (text.includes('5') || text.toLowerCase().includes('fila')) throw new Error("A fila esta cheia (QUEUE_FULL)");
                 if (text.toLowerCase().includes('comando')) {
-                    // This is handled by the retry logic in processPrompt
-                    throw new Error("Erro do Flow: Você precisa fornecer um comando");
+                    // Verify the editor is actually empty before treating this as fatal
+                    const editorCheck = document.querySelector('[data-slate-editor="true"]') ||
+                        document.querySelector('[role="textbox"]');
+                    const editorActualText = editorCheck ? (editorCheck.innerText || editorCheck.textContent || '').trim() : '';
+                    if (!editorActualText) {
+                        // Editor really is empty — throw to trigger retry
+                        throw new Error("Erro do Flow: Voce precisa fornecer um comando");
+                    }
+                    // Editor has text — toast is likely a false positive from Flow internal validation.
+                    // Hide it and continue waiting for the card.
+                    console.warn('[Flow Automator] Empty-command toast detected but editor has text (' + editorActualText.length + ' chars). Hiding toast and continuing...');
+                    toast.style.display = 'none';
+                    toast.setAttribute('hidden', '');
+                    continue;
                 }
                 throw new Error("Erro do Flow: " + text);
             }
@@ -1200,6 +1212,8 @@ async function processPrompt(prompt, index, config, image = null) {
             console.log(`[Flow Automator] Final pre-click scan: ${finalExistingUrls.size} items.`);
 
             let cardResult = null;
+            let emptyCommandRetries = 0;
+            const maxEmptyCommandRetries = 1;
             try {
                 updateOverlay('Iniciando geração...');
                 
@@ -1239,8 +1253,9 @@ async function processPrompt(prompt, index, config, image = null) {
                 cardResult = await waitForNewCard(finalExistingUrls, existingCards, config.generationTimeout * 1000, scanMode);
             } catch (e) {
                 // Retry specifically for "empty command" error
-                if (e.message.includes('fornecer um comando')) {
-                    console.warn('[Flow Automator] Empty command detected. Retrying...');
+                if (e.message.includes('fornecer um comando') && emptyCommandRetries < maxEmptyCommandRetries) {
+                    emptyCommandRetries++;
+                    console.warn('[Flow Automator] Empty command detected. Retry ' + emptyCommandRetries + '/' + maxEmptyCommandRetries + '...');
                     // Dismiss the error toast so waitForNewCard doesn't re-detect it
                     await clickDismissButton();
                     // Hide remaining sonner error toasts (can't remove from DOM — React crashes)
