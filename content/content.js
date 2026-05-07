@@ -921,9 +921,17 @@ async function waitForNewCard(existingUrls, existingCards, timeout, mode) {
                 if (!existingUrls.has(uuid)) {
                     console.log('[Flow Automator] Detectado novo UUID via link:', uuid);
                     // Prioritize specific card containers (tile-id) over rows (data-index)
-                    const card = link.closest('[data-tile-id]') || link.closest('.sc-5923b123-0') || link.closest('[data-index]') || link.parentElement;
-                    newReadyItem = { card: card, wrapper: card, src: uuid };
-                    break;
+                    const card = link.closest('[data-tile-id]') || link.closest('.sc-5923b123-0') || link.closest('.sc-4e83ba95-0') || link.closest('[data-index]') || link.parentElement;
+                    // Verify the media element has loaded a src (video/image may still be rendering)
+                    const mediaEl = card?.querySelector(mode === 'image' ? 'img[src]' : 'video[src]');
+                    if (mediaEl) {
+                        console.log('[Flow Automator] Media element found with src, card is ready');
+                        newReadyItem = { card: card, wrapper: card, src: uuid };
+                        break;
+                    }
+                    // Card found but media not loaded yet — mark UUID as seen and keep waiting
+                    console.log('[Flow Automator] Card detected but media not loaded yet, saving UUID and waiting...');
+                    existingUrls.add(uuid);
                 }
             }
         }
