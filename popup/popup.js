@@ -323,7 +323,10 @@ function setupEventListeners() {
         videoModelEggClicks = 0;
         const sel = elements.videoModel;
         const wrapper = elements.videoModelWrapper;
-        if (sel && sel.disabled) {
+        if (sel) {
+          // Reveal all hidden video model options
+          sel.querySelectorAll('.egg-option').forEach(o => o.hidden = false);
+          // Enable the select
           sel.disabled = false;
           if (wrapper) wrapper.style.opacity = '1';
         }
@@ -691,6 +694,8 @@ async function loadSettings() {
   if (settings.aspectRatio) elements.aspectRatio.value = settings.aspectRatio;
     // Unlock check: video model + 4K resolution
   if (settings.videoModelUnlocked && elements.videoModel) {
+    // Reveal hidden options
+    elements.videoModel.querySelectorAll('.egg-option').forEach(o => o.hidden = false);
     elements.videoModel.disabled = false;
     if (elements.videoModelWrapper) elements.videoModelWrapper.style.opacity = '1';
     // Add 4K to video resolution if not present
