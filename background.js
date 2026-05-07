@@ -51,11 +51,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'downloadUrl' || message.action === 'downloadUrl') {
         const url = message.url;
         if (!url) { sendResponse({ success: false, error: 'No url' }); return true; }
-        registerPendingDownload(url, message.fileType || 'image');
-        chrome.downloads.download({
-            url: url,
-            saveAs: false
-        }).then(() => sendResponse({ success: true })).catch(e => sendResponse({ success: false, error: e.message }));
+        const fileType = message.fileType || 'image';
+        registerPendingDownload(url, fileType);
+        // Pass filename directly (reference extension pattern — more robust than relying only on onDeterminingFilename)
+        const pending = pendingDownloadQueue[pendingDownloadQueue.length - 1];
+        const downloadOptions = { url: url, saveAs: false };
+        if (pending?.filename) {
+            downloadOptions.filename = pending.filename;
+            downloadOptions.conflictAction = 'uniquify';
+            console.log('[BG] Downloading with filename:', pending.filename);
+        }
+        chrome.downloads.download(downloadOptions)
+            .then(() => sendResponse({ success: true }))
+            .catch(e => sendResponse({ success: false, error: e.message }));
         return true;
     }
 
@@ -808,10 +816,21 @@ function registerPendingDownload(url, type) {
     const isFlowRedirect = url && url.includes('getMediaUrlRedirect');
     const urlBase = url ? (isFlowRedirect ? url : url.split('?')[0]) : null;
 
+    // Extract media UUID for matching (reference extension pattern)
+    let mediaId = '';
+    if (isFlowRedirect) {
+        try {
+            const parsed = new URL(url, 'https://labs.google');
+            const name = parsed.searchParams.get('name');
+            if (name) mediaId = name;
+        } catch (_) { }
+    }
+
     console.log('[BG] Registering download:', (urlBase || 'unknown').substring(0, 80) + '...', '->', filename);
 
     pendingDownloadQueue.push({
         urlBase: urlBase,
+        mediaId: mediaId,
         filename: filename,
         basename: basename,
         subfolder: cfg.subfolder || '',
@@ -1364,14 +1383,31 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
         return;
     }
 
-    // 2. Check the queue for a match
+    // 2. Check the queue for a match (by URL, mediaId, or time window)
     const isFlowRedirect = itemUrl.includes('getMediaUrlRedirect');
     const itemUrlBase = isFlowRedirect ? itemUrl : itemUrl.split('?')[0];
+
+    // Extract mediaId from redirect URL (e.g. /fx/api/trpc/media.getMediaUrlRedirect?name=UUID)
+    function extractMediaIdFromUrl(url) {
+        try {
+            const parsed = new URL(url);
+            const name = parsed.searchParams.get('name');
+            if (name) return name;
+        } catch (_) { }
+        return '';
+    }
+    const itemMediaId = extractMediaIdFromUrl(itemUrl);
 
     // Priority 1: Exact URL match
     let index = pendingDownloadQueue.findIndex(q => q.urlBase && q.urlBase === itemUrlBase);
 
-    // Priority 2: Automation is running and it's a Flow URL, matching time window
+    // Priority 2: Match by mediaId (UUID from redirect URL)
+    if (index === -1 && itemMediaId) {
+        index = pendingDownloadQueue.findIndex(q => q.mediaId && q.mediaId === itemMediaId);
+        if (index !== -1) console.log('[BG] Matched by mediaId:', itemMediaId);
+    }
+
+    // Priority 3: Automation is running and it's a Flow URL, matching time window
     const timeSinceLastReg = Date.now() - (automationState.lastRegistrationTime || 0);
     if (index === -1 && isFlowUrl && pendingDownloadQueue.length > 0 && timeSinceLastReg < 120000) {
         console.log('[BG] Matching by time window (<120s) for Flow URL');
