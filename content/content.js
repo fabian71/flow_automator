@@ -878,8 +878,7 @@ async function waitForNewCard(existingUrls, existingCards, timeout, mode) {
                 if (text.includes('5') || text.toLowerCase().includes('fila')) throw new Error("A fila esta cheia (QUEUE_FULL)");
                 if (text.toLowerCase().includes('comando')) {
                     // Verify the editor is actually empty before treating this as fatal
-                    const editorCheck = document.querySelector('[data-slate-editor="true"]') ||
-                        document.querySelector('[role="textbox"]');
+                    const editorCheck = findPromptEditor();
                     const editorActualText = editorCheck ? (editorCheck.innerText || editorCheck.textContent || '').trim() : '';
                     if (!editorActualText) {
                         // Editor really is empty — throw to trigger retry
