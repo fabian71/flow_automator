@@ -868,9 +868,10 @@ async function waitForNewCard(existingUrls, existingCards, timeout, mode) {
     await sleep(2000);
 
     while (Date.now() - startTime < timeout) {
-        // Check for error toasts (Queue Full / Policy / Empty Command)
+        // Check for error toasts (Queue Full / Policy / Empty Command) — skip hidden toasts
         const errorToasts = document.querySelectorAll('[data-sonner-toast]');
         for (const toast of errorToasts) {
+            if (toast.style.display === 'none' || toast.hasAttribute('hidden')) continue;
             const icon = toast.querySelector('i');
             if (icon && icon.textContent.trim() === 'error') {
                 const text = toast.textContent?.trim() || "";
@@ -1242,13 +1243,14 @@ async function processPrompt(prompt, index, config, image = null) {
                     console.warn('[Flow Automator] Empty command detected. Retrying...');
                     // Dismiss the error toast so waitForNewCard doesn't re-detect it
                     await clickDismissButton();
-                    // Aggressively remove any remaining sonner error toasts from DOM
+                    // Hide remaining sonner error toasts (can't remove from DOM — React crashes)
                     const errorToasts = document.querySelectorAll('[data-sonner-toast]');
                     for (const toast of errorToasts) {
                         const icon = toast.querySelector('i');
                         if (icon && icon.textContent.trim() === 'error') {
-                            console.warn('[Flow Automator] Force-removing error toast:', toast.textContent?.trim()?.substring(0, 80));
-                            toast.remove();
+                            console.warn('[Flow Automator] Hiding error toast:', toast.textContent?.trim()?.substring(0, 80));
+                            toast.style.display = 'none';
+                            toast.setAttribute('hidden', '');
                         }
                     }
                     await sleep(2000);
