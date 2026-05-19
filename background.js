@@ -674,12 +674,12 @@ async function mainWorldSelectSettings(tabId, config) {
                                 const hasArrow = Array.from(b.querySelectorAll('i')).some(i => normText(i.textContent) === 'arrow_drop_down');
                                 const kws = isImage
                                     ? ['nano banana', 'imagen', 'image 4', 'imagem 4']
-                                    : ['veo', 'fast', 'quality', 'video'];
+                                    : ['omni', 'flash', 'veo', 'fast', 'quality', 'video'];
                                 return hasArrow && (kws.some(k => t.includes(k)) || b.id.includes('radix'));
                             };
 
                             let modelDrop = Array.from(menu.querySelectorAll("button,[role='combobox']")).find(isModelButton) ||
-                                byXPath("//button[.//i[normalize-space(text())='arrow_drop_down'] and (contains(.,'Nano Banana') or contains(.,'Imagen') or contains(.,'Image 4') or contains(.,'Veo'))]");
+                                byXPath("//button[.//i[normalize-space(text())='arrow_drop_down'] and (contains(.,'Nano Banana') or contains(.,'Imagen') or contains(.,'Image 4') or contains(.,'Veo') or contains(.,'Omni') or contains(.,'Flash'))]");
 
                             if (!modelDrop) return { success: false, error: 'model-dropdown-not-found', steps };
                             log('Opening model dropdown:', modelDrop.textContent.trim());
@@ -691,7 +691,7 @@ async function mainWorldSelectSettings(tabId, config) {
                                 return menus.find(m => {
                                     if (menusBefore.includes(m)) return false;
                                     const t = normText(m.textContent);
-                                    const kws = isImage ? ['nano banana', 'imagen', 'image 4'] : ['veo', 'fast', 'quality'];
+                                    const kws = isImage ? ['nano banana', 'imagen', 'image 4'] : ['omni', 'flash', 'veo', 'fast', 'quality'];
                                     return kws.some(k => t.includes(k));
                                 });
                             }, 5000, 150);
