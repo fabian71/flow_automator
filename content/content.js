@@ -1,1062 +1,875 @@
+// ===== Flow Automator Content Script (v6 - flow.google.com) =====
+// The new Google Flow (flow.google.com) is an Angular Material app:
+//   - prompt editor: ProseMirror (.ProseMirror[contenteditable])
+//   - settings: overlay panel (.cdk-overlay-container) with mat-button-toggle radios
+//   - results: <flow-grid-tile-container> tiles, media served from flow-content.google
+//   - download: right-click (context menu) > "download" > resolution submenu
+// All lookups prefer icon ligatures (mat-icon text) over translated labels so the
+// script works with the UI in Portuguese or English.
+console.log('[Flow Automator] Content script loaded (v6)');
 
-// ===== Flow Automator Content Script =====
-console.log('[Flow Automator] Content script loaded');
 
-// ===== Selectors for Google Flow =====
-const SELECTORS = {
-    PROMPT_TEXTAREA_XPATH: "//div[@role='textbox']",
-    GENERATE_BUTTON_XPATH: "//button[.//i[normalize-space(text())='arrow_forward'] or (descendant::span[normalize-space(text())='Criar' or normalize-space(text())='Create'] and not(descendant::i[normalize-space(text())='add_2' or normalize-space(text())='add']))]",
-    // Settings trigger button confirmed by browser inspection
-    SETTINGS_POPOVER_TRIGGER_XPATH: "//button[descendant::i[text()='crop_16_9' or text()='crop_9_16' or text()='crop_square']]",
-    QUEUE_FULL_POPUP_XPATH: "//li[@data-sonner-toast and .//i[normalize-space(text())='error'] and .//*[contains(., '5')]]",
-    PROMPT_POLICY_ERROR_POPUP_XPATH: "//li[@data-sonner-toast and .//i[normalize-space(text())='error'] and not(.//*[contains(., '5')])]",
-    START_IMAGE_ADD_BUTTON_XPATH: "//button[.//i[text()='add'] or .//svg]",
-    HIDDEN_FILE_INPUT_XPATH: '//input[@type="file"]',
-    UPLOAD_SPINNER_XPATH: "//i[contains(text(), 'progress_activity')]",
-    OPEN_MEDIA_DIALOG_XPATH: "//div[@role='dialog' and @data-state='open']",
-    MEDIA_DIALOG_UPLOAD_BUTTON_XPATH: "//div[@role='dialog' and @data-state='open']//button[.//i[normalize-space(text())='upload' or normalize-space(text())='file_upload']]"
-};
-
-const IMAGE_DOWNLOAD_OPTIONS = {
-    '1k': ['1K', 'Download 1K', 'Standard', 'Padrao'],
-    '2k': ['2K', 'Download 2K', 'High', 'Alta'],
-    '4k': ['4K', 'Download 4K', 'Ultra', 'Maxima']
-};
-
-const IMAGE_RESULT_SELECTOR = 'img[src*="storage.googleapis.com"], img[src*="googleusercontent.com"], img[src^="blob:"], img[src*="getMediaUrlRedirect"]';
-const VIDEO_RESULT_SELECTOR = 'video[src*="storage.googleapis.com"], video[src*="googleusercontent.com"], video[src^="blob:"], video[src*="getMediaUrlRedirect"]';
 
 // ===== State =====
 let isProcessing = false;
 let currentPromptText = '';
 let lastFlowDownloadDetectedAt = 0;
-let dashboardSetupDone = false;
 
-// ===== Dashboard Setup (runs once before first prompt) =====
-async function initDashboardSetup(config = {}) {
-    if (dashboardSetupDone) return;
-    console.log('[Flow Automator] Running one-time dashboard setup...');
-
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-    const norm = (v) => String(v || '')
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-    const isVisible = (el) => {
-        if (!el || !el.isConnected) return false;
-        const st = window.getComputedStyle(el);
-        if (!st || st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return false;
-        const r = el.getBoundingClientRect();
-        return r.width > 2 && r.height > 2;
-    };
-    const humanClick = (el) => {
-        if (!el) return;
-        try {
-            const rect = el.getBoundingClientRect();
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-            const common = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
-            try { el.dispatchEvent(new PointerEvent('pointerdown', common)); } catch (_) { }
-            el.dispatchEvent(new MouseEvent('mousedown', common));
-            try { el.dispatchEvent(new PointerEvent('pointerup', common)); } catch (_) { }
-            el.dispatchEvent(new MouseEvent('mouseup', common));
-            el.dispatchEvent(new MouseEvent('click', common));
-        } catch (_) { try { el.click(); } catch (_) { } }
-    };
-
-    try {
-        // Step 1: Click the "View full dashboard" button (icon: dashboard)
-        const allButtons = Array.from(document.querySelectorAll('button'));
-        const dashboardBtn = allButtons.find(b => {
-            const icon = b.querySelector('i');
-            return icon && icon.textContent.trim() === 'dashboard' && isVisible(b);
-        });
-        if (dashboardBtn) {
-            console.log('[Flow Automator] Clicking dashboard button...');
-            humanClick(dashboardBtn);
-            await sleep(1000);
-        } else {
-            console.log('[Flow Automator] Dashboard button not found (already on dashboard?), continuing...');
-        }
-
-        // Step 2 was removed because it was clicking the "Criação de cenas" button which is incorrect now.
-
-        // Step 3: Click the grid settings button (icon: settings_2)
-        const settingsBtn = Array.from(document.querySelectorAll('button')).find(b => {
-            const icon = norm(b.querySelector('i')?.textContent);
-            const popupType = norm(b.getAttribute('aria-haspopup') || '');
-            const label = norm(
-                (b.getAttribute('aria-label') || '') + ' ' +
-                (b.getAttribute('data-tooltip') || '') + ' ' +
-                (b.textContent || '')
-            );
-            // Match the tile-grid settings trigger, not any generic settings_2 button.
-            return (
-                icon === 'settings_2' &&
-                popupType === 'menu' &&
-                isVisible(b) &&
-                (
-                    label.includes('grid settings') ||
-                    label.includes('tile grid') ||
-                    label.includes('configuracoes da grade') ||
-                    label.includes('configuracoes de grade') ||
-                    label.includes('grade de blocos')
-                )
-            );
-        });
-
-        if (settingsBtn) {
-            // Only click if not already expanded
-            if (settingsBtn.getAttribute('aria-expanded') !== 'true') {
-                console.log('[Flow Automator] Opening settings_2 menu...');
-                humanClick(settingsBtn);
-                await sleep(800);
-            } else {
-                console.log('[Flow Automator] settings_2 menu already open.');
-            }
-        } else {
-            console.warn('[Flow Automator] Settings_2 button not found, continuing to look for Grid tab...');
-        }
-
-        // Step 4: Wait for the dropdown menu and click the 'Grid/Grade' tab
-        let gridTab = null;
-        for (let i = 0; i < 25; i++) {
-            gridTab = Array.from(document.querySelectorAll('[role="tab"], button')).find(b => {
-                const label = norm(b.getAttribute('aria-label') || '');
-                const iconText = norm(b.querySelector('i')?.textContent);
-                const text = norm(b.textContent || '');
-                const isGridTab = (
-                    label === 'grid' ||
-                    label === 'grade' ||
-                    text.startsWith('grid') ||
-                    text.startsWith('grade')
-                );
-                return isGridTab && isVisible(b);
-            });
-            if (gridTab) break;
-            await sleep(200);
-        }
-
-        if (gridTab) {
-            console.log('[Flow Automator] Clicking Grid/Grade tab...');
-            humanClick(gridTab);
-            await sleep(500);
-            // Close the menu with Escape to clean up
-            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
-            await sleep(300);
-            dashboardSetupDone = true;
-        } else {
-            console.warn('[Flow Automator] Grid/Grade tab not found; setup will be retried later.');
-        }
-
-        console.log('[Flow Automator] Dashboard setup complete.');
-    } catch (e) {
-        console.warn('[Flow Automator] initDashboardSetup error:', e.message);
-    }
-}
-
-// ===== Message Handler =====
+// ===== Message handling =====
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    console.log('[Flow Automator] Received message:', message.type);
     if (message.type === 'processPrompt') {
-        processPrompt(message.prompt, message.index, message.config, message.image);
+        processPrompt(message.prompt, message.index, message.config || {}, message.image);
         sendResponse({ received: true });
     } else if (message.type === 'ping') {
         sendResponse({ pong: true });
     } else if (message.type === 'complete') {
-        // Show completion screen
         showComplete(message.success || 0, message.failed || 0);
         sendResponse({ received: true });
     } else if (message.type === 'paused') {
-        // Update overlay to show paused state
         handlePaused(message);
         sendResponse({ received: true });
     } else if (message.type === 'unpaused') {
-        // Update overlay to show resumed state
         handleUnpaused();
         sendResponse({ received: true });
     } else if (message.type === 'flowDownloadDetected') {
         lastFlowDownloadDetectedAt = Date.now();
-        console.log('[Flow Automator] Flow download detected by background:', message.filename || message.url || '');
+        console.log('[Flow Automator] Download detected:', message.filename || message.url || '');
         sendResponse({ received: true });
     }
     return true;
 });
 
-// ===== Helper: Click Element by XPath =====
-function clickElementByXPath(xpath) {
-    try {
-        const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-        if (result) {
-            try {
-                result.click();
-                return true;
-            } catch (e) {
-                try {
-                    result.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-                    return true;
-                } catch (e) {
-                    return false;
-                }
-            }
-        }
-        return false;
-    } catch (e) {
-        return false;
-    }
+// ===== Generic DOM helpers =====
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// ===== Helper: React Click via __reactProps$ (React 17+ approach) =====
-// Calls React event handlers directly on the element - bypasses isTrusted.
-// Tries onPointerDown (used by Radix UI dropdowns) then onClick.
-function rightClick(element) {
-    if (!element) return;
-    const rect = element.getBoundingClientRect();
-    const x = rect.left + rect.width / 2;
-    const y = rect.top + rect.height / 2;
-    const events = ['contextmenu', 'mousedown', 'mouseup'];
-    events.forEach(name => {
-        element.dispatchEvent(new MouseEvent(name, {
-            bubbles: true, cancelable: true, view: window, button: 2, clientX: x, clientY: y
-        }));
-    });
-}
-function reactClick(element) {
-    if (!element) return false;
-
-    const syntheticEvent = {
-        stopPropagation: () => { },
-        preventDefault: () => { },
-        nativeEvent: { stopImmediatePropagation: () => { } },
-        target: element,
-        currentTarget: element,
-        bubbles: true,
-        button: 0,
-        isPrimary: true,
-        type: 'pointerdown'
-    };
-
-    try {
-        // React 17+: props stored directly on DOM node as __reactProps$xxx
-        const propsKey = Object.keys(element).find(k => k.startsWith('__reactProps$'));
-        if (propsKey) {
-            const props = element[propsKey];
-            // Radix DropdownMenu.Item uses onPointerDown for selection
-            if (props.onPointerDown) {
-                props.onPointerDown({ ...syntheticEvent, type: 'pointerdown' });
-                return true;
-            }
-            if (props.onMouseDown) {
-                props.onMouseDown({ ...syntheticEvent, type: 'mousedown' });
-                return true;
-            }
-            if (props.onClick) {
-                props.onClick({ ...syntheticEvent, type: 'click' });
-                return true;
-            }
-        }
-
-        // Fallback: React fiber walk
-        const fiberKey = Object.keys(element).find(k => k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance'));
-        if (fiberKey) {
-            let fiber = element[fiberKey];
-            while (fiber) {
-                const props = fiber.memoizedProps || fiber.pendingProps;
-                if (props && (props.onPointerDown || props.onClick || props.onMouseDown)) {
-                    if (props.onPointerDown) props.onPointerDown({ ...syntheticEvent, type: 'pointerdown' });
-                    else if (props.onMouseDown) props.onMouseDown({ ...syntheticEvent, type: 'mousedown' });
-                    else if (props.onClick) props.onClick({ ...syntheticEvent, type: 'click' });
-                    return true;
-                }
-                fiber = fiber.return;
-            }
-        }
-    } catch (e) {
-        console.warn('[Flow Automator] reactClick failed:', e.message);
-    }
-
-    // Final fallback: native click
-    element.click();
-    return true;
-}
-
-
-async function realClickElement(element) {
-    // For elements we have a reference to but need main-world access,
-    // build an XPath from the element's position in DOM if possible
-    // then use mainWorldReactClick. For simplicity, just use reactClick from isolated world.
-    return reactClick(element);
-}
-
-// Primary function: routes click through background script into PAGE's main world
-// where React handlers are fully accessible without isTrusted restrictions.
-async function realClickByXPath(xpath) {
-    return new Promise(resolve => {
-        chrome.runtime.sendMessage({ action: 'mainWorldReactClick', xpath }, (res) => {
-            if (chrome.runtime.lastError) {
-                console.warn('[Flow Automator] mainWorldReactClick error:', chrome.runtime.lastError.message);
-                // Fallback to direct click
-                const el = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-                if (el) el.click();
-                resolve(false);
-            } else {
-                console.log('[Flow Automator] mainWorldReactClick:', JSON.stringify(res));
-                resolve(res && res.success);
-            }
-        });
-    });
-}
-
-async function realPressEnter() {
-    return new Promise(resolve => {
-        chrome.runtime.sendMessage({ action: 'mainWorldPressEnter' }, (res) => {
-            if (chrome.runtime.lastError) console.warn('[Flow Automator] realPressEnter error:', chrome.runtime.lastError.message);
-            resolve(res && res.success);
-        });
-    });
-}
-
-
-// ===== Helper: Wait for Element by XPath =====
-async function waitForElementByXPath(xpath, timeout = 5000) {
-    let timeLeft = timeout;
-    while (timeLeft > 0) {
-        const element = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-        if (element) return element;
-        await sleep(500);
-        timeLeft -= 500;
-    }
-    return null;
-}
-
-// ===== Helper: Find Prompt Editor (scores candidates by size/visibility) =====
-// Avoids picking hidden/disabled editors or search inputs.
-function findPromptEditor() {
-    const isVisible = (el) => {
-        if (!el || !el.isConnected) return false;
-        const style = window.getComputedStyle(el);
-        if (!style || style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-        const r = el.getBoundingClientRect();
-        return r.width > 4 && r.height > 4;
-    };
-    const selector = "textarea, [role='textbox'], [contenteditable='true'], [contenteditable='plaintext-only'], [data-slate-editor='true']";
-    const candidates = Array.from(document.querySelectorAll(selector))
-        .filter(el => isVisible(el))
-        .filter(el => !el.disabled && !el.readOnly)
-        .filter(el => {
-            const label = [
-                el.getAttribute('type'),
-                el.getAttribute('aria-label'),
-                el.getAttribute('placeholder'),
-                el.getAttribute('name'),
-                el.id,
-                el.className
-            ].map(v => String(v || '')).join(' ').toLowerCase();
-            return !/\bsearch\b/.test(label);
-        })
-        .map(el => {
-            const rect = el.getBoundingClientRect();
-            const tag = String(el.tagName || '').toLowerCase();
-            const score = rect.width * rect.height + rect.bottom + (tag === 'textarea' ? 5000 : 0);
-            return { element: el, score };
-        })
-        .sort((a, b) => b.score - a.score);
-    return candidates[0]?.element || null;
-}
-
-// ===== Helper: Fill Prompt Input via Main World =====
-// Delegates entirely to background.js which uses Slate's native API via React Fiber.
-async function fillPromptInput(promptText) {
-    const input = findPromptEditor();
-    if (!input) {
-        console.warn('[Flow Automator] fillPromptInput: editor element not found');
-        return false;
-    }
-
-    // Delegate to background.js (Slate native API via React Fiber)
-    const res = await chrome.runtime.sendMessage({ action: 'mainWorldFillText', text: promptText });
-    if (!res?.success) {
-        console.warn('[Flow Automator] mainWorldFillText failed:', res?.error);
-        return false;
-    }
-    console.log('[Flow Automator] mainWorldFillText result:', JSON.stringify(res));
-    return true;
-}
-
-function normalizePromptText(value) {
-    return String(value || '')
-        .replace(/[\u200B-\u200D\uFEFF]/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-}
-
-function isPromptApplied(promptText) {
-    const input = findPromptEditor();
-    if (!input) return false;
-
-    const expected = normalizePromptText(promptText);
-    const actual = normalizePromptText(input.innerText || input.textContent || input.value || '');
-    if (!expected) return actual.length > 0;
-    if (actual.includes(expected)) return true;
-
-    // Accept partial match for long prompts when editor normalizes punctuation/spaces.
-    return expected.length > 24 && actual.includes(expected.slice(0, 24));
-}
-
-async function ensurePromptInput(promptText, maxAttempts = 3) {
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        const ok = await fillPromptInput(promptText);
-        await sleep(500);
-        if (ok && isPromptApplied(promptText)) return true;
-        console.warn(`[Flow Automator] Prompt not confirmed in editor (attempt ${attempt}/${maxAttempts})`);
-    }
-    return false;
-}
-
-
-// ===== Settings Selection (all in MAIN world via background.js) =====
-// Uses afHumanClick (with clientX/clientY) - confirmed working approach from reference extension.
-// Selectors confirmed by browser inspection:
-//   Mode tabs:   button[role='tab'][id$='trigger-IMAGE'] / trigger-VIDEO
-//   Ratio tabs:  trigger-LANDSCAPE / LANDSCAPE_4_3 / SQUARE / PORTRAIT_3_4 / PORTRAIT
-//   Quantity:    button[role='tab'][id$='trigger-1']
-//   Model dropdown: button with arrow_drop_down inside div[role='menu']
-//   Model items: div[role='menuitem'] containing model name text
-async function applyFlowSettings(config) {
-    return new Promise((resolve) => {
-        chrome.runtime.sendMessage({ action: 'mainWorldSelectSettings', config }, (res) => {
-            if (chrome.runtime.lastError) {
-                console.error('[Flow Automator] mainWorldSelectSettings error:', chrome.runtime.lastError.message);
-                resolve(false);
-            } else {
-                console.log('[Flow Automator] mainWorldSelectSettings result:', JSON.stringify(res));
-                resolve(!!res?.success);
-            }
-        });
-    });
-}
-
-// Legacy aliases (kept for processPrompt compatibility)
-async function openSettingsPopover() {
-    const btn = await waitForElementByXPath(SELECTORS.SETTINGS_POPOVER_TRIGGER_XPATH, 3000);
-    if (!btn) return false;
-    if (btn.getAttribute('aria-expanded') !== 'true') {
-        const rect = btn.getBoundingClientRect();
-        const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
-        btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
-        btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
-        btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
-        btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
-        await sleep(600);
-    }
-    return true;
-}
-
-
-// ===== Helper: Upload Image (Robust) =====
-async function uploadImage(dataUrl, fileName, fileType, cropMode = 'landscape') {
-    const norm = (v) => String(v || '')
+function norm(v) {
+    return String(v || '')
         .toLowerCase()
         .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[̀-ͯ]/g, '')
         .replace(/\s+/g, ' ')
         .trim();
-
-    const isVisible = (el) => {
-        if (!el || !el.isConnected) return false;
-        const style = window.getComputedStyle(el);
-        if (!style || style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-        const r = el.getBoundingClientRect();
-        return r.width > 4 && r.height > 4;
-    };
-
-    const listFileInputs = () => {
-        const snapshot = document.evaluate(
-            SELECTORS.HIDDEN_FILE_INPUT_XPATH,
-            document,
-            null,
-            XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
-            null
-        );
-        const out = [];
-        for (let i = 0; i < snapshot.snapshotLength; i++) out.push(snapshot.snapshotItem(i));
-        return out.filter(Boolean);
-    };
-
-    const waitForNewFileInput = async (beforeSet, timeoutMs = 6000) => {
-        let left = timeoutMs;
-        while (left > 0) {
-            const now = listFileInputs();
-            const fresh = now.find(el => !beforeSet.has(el));
-            if (fresh) return fresh;
-            await sleep(200);
-            left -= 200;
-        }
-        return null;
-    };
-
-    const waitForOpenMediaDialog = async (timeoutMs = 3500) => {
-        let left = timeoutMs;
-        while (left > 0) {
-            const dlg = document.evaluate(
-                SELECTORS.OPEN_MEDIA_DIALOG_XPATH,
-                document,
-                null,
-                XPathResult.FIRST_ORDERED_NODE_TYPE,
-                null
-            ).singleNodeValue;
-            if (dlg && isVisible(dlg)) return dlg;
-            await sleep(150);
-            left -= 150;
-        }
-        return null;
-    };
-
-    const getOpenMediaDialog = () => {
-        return document.evaluate(
-            SELECTORS.OPEN_MEDIA_DIALOG_XPATH,
-            document,
-            null,
-            XPathResult.FIRST_ORDERED_NODE_TYPE,
-            null
-        ).singleNodeValue;
-    };
-
-    const countSlotImages = () => {
-        // Broad selector for slots: elements with aria-haspopup="dialog" or data-card-open
-        // We match any element (div or button) that contains an img, video or background-image
-        return document.querySelectorAll('[aria-haspopup="dialog"] img, [aria-haspopup="dialog"] video, [aria-haspopup="dialog"] [style*="background-image"], [data-card-open] img, [data-card-open] video, [data-card-open] [style*="background-image"]').length;
-    };
-
-    const waitForInitialSlotFilled = async (beforeCount, timeoutMs = 20000) => {
-        let left = timeoutMs;
-        while (left > 0) {
-            const afterCount = countSlotImages();
-            if (afterCount > beforeCount) return true;
-            await sleep(500);
-            left -= 500;
-        }
-        return false;
-    };
-
-    const clickElementSafe = async (el) => {
-        if (!el) return false;
-        try {
-            reactClick(el);
-            await sleep(220);
-            return true;
-        } catch (_) {
-            try {
-                el.click();
-                await sleep(220);
-                return true;
-            } catch (_e) {
-                return false;
-            }
-        }
-    };
-
-    const selectInitialSlot = async () => {
-        // O Flow mudou para <div type="button" aria-haspopup="dialog">Start</div>
-        const candidates = Array.from(document.querySelectorAll("[aria-haspopup='dialog'][type='button'], div[aria-haspopup='dialog'], button[aria-haspopup='dialog']"))
-            .filter(isVisible);
-
-        const initialBtn = candidates.find(el => {
-            const t = norm(el.textContent);
-            return t === 'start' || t === 'inicio' || t === 'inicial' || t === 'initial' || 
-                   t.includes('start') || t.includes('inicio') || t.includes('inicial') || t.includes('initial');
-        });
-
-        if (initialBtn) return clickElementSafe(initialBtn);
-        
-        // Se não achar por texto, geralmente o 'Start' é o primeiro da lista
-        if (candidates.length > 0) return clickElementSafe(candidates[0]);
-        
-        return false;
-    };
-
-    const clickUploadInsideMediaDialog = async () => {
-        const btnByXpath = document.evaluate(
-            SELECTORS.MEDIA_DIALOG_UPLOAD_BUTTON_XPATH,
-            document,
-            null,
-            XPathResult.FIRST_ORDERED_NODE_TYPE,
-            null
-        ).singleNodeValue;
-        if (btnByXpath && isVisible(btnByXpath)) {
-            return clickElementSafe(btnByXpath);
-        }
-
-        const dialog = document.evaluate(
-            SELECTORS.OPEN_MEDIA_DIALOG_XPATH,
-            document,
-            null,
-            XPathResult.FIRST_ORDERED_NODE_TYPE,
-            null
-        ).singleNodeValue;
-        if (!dialog) return false;
-
-        const buttons = Array.from(dialog.querySelectorAll('button')).filter(isVisible);
-        const byIcon = buttons.find(b => {
-            const icon = norm(b.querySelector('i')?.textContent || '');
-            return icon === 'upload';
-        });
-        if (byIcon) return clickElementSafe(byIcon);
-
-        return false;
-    };
-
-    const setFileOnInput = (inputEl, file) => {
-        try {
-            const dt = new DataTransfer();
-            dt.items.add(file);
-            inputEl.files = dt.files;
-            inputEl.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-            inputEl.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-            return true;
-        } catch (e) {
-            console.warn('[Flow Automator] setFileOnInput failed:', e?.message || e);
-            return false;
-        }
-    };
-
-    const buildUploadInputCandidates = (beforeSet) => {
-        const dialog = getOpenMediaDialog();
-        const freshInputs = listFileInputs().filter(el => !beforeSet.has(el));
-        const dialogInputs = dialog
-            ? Array.from(dialog.querySelectorAll('input[type="file"]'))
-            : [];
-        const allInputs = listFileInputs();
-
-        const merged = [];
-        const pushUnique = (el) => {
-            if (!el) return;
-            if (merged.includes(el)) return;
-            if (el.disabled) return;
-            merged.push(el);
-        };
-
-        // Priority: input inside open dialog, then fresh inputs, then any existing file input.
-        dialogInputs.forEach(pushUnique);
-        freshInputs.forEach(pushUnique);
-        allInputs.forEach(pushUnique);
-        return merged;
-    };
-
-    const beforeInputs = new Set(listFileInputs());
-    const slotImageCountBefore = countSlotImages();
-
-    // Flow required by current UI: click "Initial/Inicial" -> open dialog -> click "upload" button.
-    const initialClicked = await selectInitialSlot();
-    if (initialClicked) {
-        await waitForOpenMediaDialog(3500);
-        await clickUploadInsideMediaDialog();
-    }
-
-    // Inject File
-    const res = await fetch(dataUrl);
-    const blob = await res.blob();
-    const file = new File([blob], fileName, { type: fileType });
-
-    let fileInjected = false;
-    let candidateInputs = buildUploadInputCandidates(beforeInputs);
-    if (candidateInputs.length === 0) {
-        // Fallback to legacy "add" button flow used by reference extension.
-        console.log("No input candidates after Initial dialog, trying add button...");
-        const btnAdd = await waitForElementByXPath(SELECTORS.START_IMAGE_ADD_BUTTON_XPATH, 2500);
-        if (btnAdd) await clickElementSafe(btnAdd);
-        await waitForNewFileInput(beforeInputs, 3000);
-        candidateInputs = buildUploadInputCandidates(beforeInputs);
-    }
-
-    for (const inputEl of candidateInputs) {
-        if (!setFileOnInput(inputEl, file)) continue;
-        fileInjected = true;
-        await sleep(200);
-        break;
-    }
-
-    if (!fileInjected) {
-        console.warn('[Flow Automator] Could not inject file into any input[type=file] candidate.');
-        return false;
-    }
-
-    // Wait for Spinner
-    let spinner = await waitForElementByXPath(SELECTORS.UPLOAD_SPINNER_XPATH, 2000);
-    if (spinner) {
-        let maxWait = 180000;
-        while (maxWait > 0) {
-            await sleep(500);
-            maxWait -= 500;
-            const exists = document.evaluate(SELECTORS.UPLOAD_SPINNER_XPATH, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-            if (!exists) break;
-        }
-        if (maxWait <= 0) return false;
-    } else {
-        await sleep(2000);
-    }
-
-    // Explicitly wait until the "Initial" slot receives the uploaded image preview.
-    const slotFilled = await waitForInitialSlotFilled(slotImageCountBefore, 12000);
-    if (!slotFilled) {
-        console.warn('[Flow Automator] Upload finished but Initial slot was not confirmed as filled in time.');
-        return false;
-    }
-    return true;
 }
 
-// ===== Helper: Set Video Aspect Ratio (Text-to-Video) =====
-async function setVideoAspectRatio(aspectRatio) {
-    if (!aspectRatio) return true;
-    if (await openSettingsPopover()) {
-        const targetXpath = (aspectRatio === '9:16') ? SELECTORS.ASPECT_RATIO_PORTRAIT_XPATH : SELECTORS.ASPECT_RATIO_LANDSCAPE_XPATH;
-        const btn = document.evaluate(targetXpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-        if (btn) btn.click();
-        await sleep(500);
-
-        // Close popover
-        try {
-            document.body.click();
-        } catch (e) { }
-        return true;
-    }
-    return false;
+// Letters/digits only ("Veo 3.1 - Lite" -> "veo31lite")
+function compact(v) {
+    return norm(v).replace(/[^a-z0-9]/g, '');
 }
 
-// ===== Helper: Set Video Duration =====
-async function setVideoDuration(duration) {
-    if (!duration) return;
-    if (await openSettingsPopover()) {
-        const val = duration === '10s' ? 'x2' : 'x1'; // assumption that 10s corresponds to x2 multiplier
-        const xpath = `//div[@role='dialog']//button[contains(., '${val}')]`;
-        const btn = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-        if (btn) {
-            btn.click();
-            await sleep(500);
-        }
-        // Close popover
-        document.body.click();
-        return true;
-    }
-    return false;
+function isVisible(el) {
+    if (!el || !el.isConnected) return false;
+    const st = window.getComputedStyle(el);
+    if (!st || st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 2 && r.height > 2;
 }
 
-// ===== Scan Existing URLs (Video/Image) =====
-function scanExistingUrls(mode) {
-    const urls = new Set();
-    const selector = mode === 'image' ? IMAGE_RESULT_SELECTOR : VIDEO_RESULT_SELECTOR;
-    
-    // 1. Scan by img/video src
-    document.querySelectorAll(selector).forEach(el => {
-        const src = (el.getAttribute('src') || '').trim();
-        if (src) urls.add(src);
-    });
-
-    // 2. Scan by /edit/ UUIDs (more robust)
-    let idCount = 0;
-    document.querySelectorAll('a[href*="/edit/"]').forEach(a => {
-        const href = a.getAttribute('href') || a.href || '';
-        const match = href.match(/\/edit\/([a-f0-9-]{36})/i);
-        if (match) {
-            urls.add(match[1]);
-            idCount++;
-        }
-    });
-
-    // 3. Scan by [data-tile-id] directly (covers cards without media yet)
-    document.querySelectorAll('[data-tile-id]').forEach(el => {
-        const tid = el.getAttribute('data-tile-id');
-        if (tid) {
-            // Flow usually prefixes tile-id with fe_id_...
-            const match = tid.match(/([a-f0-9-]{36})/i);
-            if (match) urls.add(match[1]);
-        }
-    });
-    
-    console.log(`[Flow Automator] scanExistingUrls found ${urls.size} items.`);
-    return urls;
-}
-
-function hasDownloadButton(card) {
-    if (!card) return false;
-    const buttons = card.querySelectorAll('button');
-    for (const btn of buttons) {
-        const icon = btn.querySelector('i');
-        const span = btn.querySelector('span');
-        const iconText = (icon?.textContent || '').toLowerCase();
-        const spanText = (span?.textContent || '').toLowerCase();
-        const tooltip = (btn.getAttribute('data-tooltip') || '').toLowerCase();
-        if (
-            iconText.includes('download') ||
-            iconText.includes('file_download') ||
-            spanText.includes('download') ||
-            tooltip.includes('download')
-        ) {
-            return true;
-        }
-    }
-    return false;
-}
-
-function isDownloadButton(btn) {
-    if (!btn) return false;
-    const icon = btn.querySelector('i');
-    const span = btn.querySelector('span');
-    const iconText = (icon?.textContent || '').toLowerCase();
-    const spanText = (span?.textContent || '').toLowerCase();
-    const tooltip = (btn.getAttribute('data-tooltip') || '').toLowerCase();
-    const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
-    return (
-        iconText.includes('download') ||
-        iconText.includes('file_download') ||
-        spanText.includes('download') ||
-        tooltip.includes('download') ||
-        ariaLabel.includes('download') ||
-        // NOVO: Aceitar o botão "Mais" como proxy para o card estar pronto para download
-        iconText.includes('more_vert') ||
-        iconText.includes('more_horiz') ||
-        tooltip.includes('mais') ||
-        ariaLabel.includes('mais') ||
-        tooltip.includes('more') ||
-        ariaLabel.includes('more')
-    );
-}
-
-function findLikelyCard(startEl, mode) {
-    let el = startEl;
-    for (let depth = 0; el && depth < 12; depth++, el = el.parentElement) {
-        if (!el || el === document.body) break;
-        const hasMedia = mode === 'image'
-            ? !!el.querySelector('img')
-            : !!el.querySelector('video');
-        if (hasMedia && hasDownloadButton(el)) return el;
+async function waitFor(fn, timeoutMs = 5000, stepMs = 150) {
+    const end = Date.now() + timeoutMs;
+    while (Date.now() < end) {
+        let v = null;
+        try { v = fn(); } catch (_) { v = null; }
+        if (v) return v;
+        await sleep(stepMs);
     }
     return null;
 }
 
-function scanExistingCards(mode) {
-    const cardSet = new Set();
-    const selector = mode === 'image' ? IMAGE_RESULT_SELECTOR : VIDEO_RESULT_SELECTOR;
-    document.querySelectorAll(selector).forEach(el => {
-        const card =
-            findLikelyCard(el, mode) ||
-            el.closest('[data-index], [data-item-index], [role="listitem"], article, li, .sc-20145656-0, .sc-6349d8ef-0');
-        if (card) cardSet.add(card);
+// Text of the first material icon inside an element (e.g. "download", "crop_16_9")
+function iconOf(el) {
+    const icon = el?.querySelector('mat-icon, .google-symbols, i');
+    return String(icon?.textContent || '').trim();
+}
+
+// Visible label without the icon ligature text
+function labelOf(el) {
+    if (!el) return '';
+    let txt = el.textContent || '';
+    el.querySelectorAll('mat-icon, .google-symbols, i').forEach(i => {
+        txt = txt.replace(i.textContent || '', ' ');
     });
-
-    // Fallback: derive cards from download buttons (Flow DOM often changes container classes)
-    document.querySelectorAll('button').forEach(btn => {
-        if (!isDownloadButton(btn)) return;
-        const card =
-            findLikelyCard(btn, mode) ||
-            btn.closest('[data-index], [data-item-index], [role="listitem"], article, li, .sc-20145656-0, .sc-6349d8ef-0') ||
-            btn.parentElement;
-        if (card) cardSet.add(card);
-    });
-
-    return cardSet;
+    return txt.replace(/\s+/g, ' ').trim();
 }
 
-// ===== Wait for a NEW card to appear (by identifying NEW URL) =====
-async function waitForNewCard(existingUrls, existingCards, timeout, mode) {
-    const startTime = Date.now();
-    console.log('[Flow Automator] Waiting for new', mode, 'card. Known URLs:', existingUrls.size);
-
-    // Initial wait to let generation start
-    await sleep(2000);
-
-    while (Date.now() - startTime < timeout) {
-        // Check for error toasts (Queue Full / Policy / Empty Command) — skip hidden toasts
-        const errorToasts = document.querySelectorAll('[data-sonner-toast]');
-        for (const toast of errorToasts) {
-            if (toast.style.display === 'none' || toast.hasAttribute('hidden')) continue;
-            const icon = toast.querySelector('i');
-            if (icon && icon.textContent.trim() === 'error') {
-                const text = toast.textContent?.trim() || "";
-                if (text.includes('5') || text.toLowerCase().includes('fila')) throw new Error("A fila esta cheia (QUEUE_FULL)");
-                if (text.toLowerCase().includes('comando')) {
-                    // Verify the editor is actually empty before treating this as fatal
-                    const editorCheck = findPromptEditor();
-                    const editorActualText = editorCheck ? (editorCheck.innerText || editorCheck.textContent || '').trim() : '';
-                    if (!editorActualText) {
-                        // Editor really is empty — throw to trigger retry
-                        throw new Error("Erro do Flow: Voce precisa fornecer um comando");
-                    }
-                    // Editor has text — toast is likely a false positive from Flow internal validation.
-                    // Hide it and continue waiting for the card.
-                    console.warn('[Flow Automator] Empty-command toast detected but editor has text (' + editorActualText.length + ' chars). Hiding toast and continuing...');
-                    toast.style.display = 'none';
-                    toast.setAttribute('hidden', '');
-                    continue;
-                }
-                throw new Error("Erro do Flow: " + text);
-            }
-        }
-
-        // 1. Check for Progress Indicators (reliable "Generating" state)
-        const progressElements = document.querySelectorAll('[class*="percentage"], [class*="status"], [class*="Generating"], [class*="loading"], [class*="iEQNVH"]');
-        let isGenerating = false;
-        for (const el of progressElements) {
-            const text = el.textContent.trim();
-            if (text.match(/^\d+%$/) || text.toLowerCase().includes('gerando') || text.toLowerCase().includes('generating') || text.toLowerCase().includes('criando')) {
-                isGenerating = true;
-                updateStatus('Status detectado: ' + text);
-                break;
-            }
-        }
-
-        // 2. Scan for NEW Ready Items (Media UUIDs from /edit/ links)
-        let newReadyItem = null;
-        
-        // Strategy A: UUIDs from Edit Links (Very robust)
-        const editLinks = document.querySelectorAll('a[href*="/edit/"]');
-        for (const link of editLinks) {
-            const href = link.getAttribute('href');
-            const match = href.match(/\/edit\/([a-f0-9-]{36})/i);
-            if (match) {
-                const uuid = match[1];
-                if (!existingUrls.has(uuid)) {
-                    console.log('[Flow Automator] Detectado novo UUID via link:', uuid);
-                    // Prioritize specific card containers (tile-id) over rows (data-index)
-                    const card = link.closest('[data-tile-id]') || link.closest('.sc-5923b123-0') || link.closest('.sc-4e83ba95-0') || link.closest('[data-index]') || link.parentElement;
-                    // Verify the media element has loaded a src (video/image may still be rendering)
-                    const mediaEl = card?.querySelector(mode === 'image' ? 'img[src]' : 'video[src]');
-                    if (mediaEl) {
-                        console.log('[Flow Automator] Media element found with src, card is ready');
-                        newReadyItem = { card: card, wrapper: card, src: uuid };
-                        break;
-                    }
-                    // Card found but media not loaded yet — mark UUID as seen and keep waiting
-                    console.log('[Flow Automator] Card detected but media not loaded yet, saving UUID and waiting...');
-                    existingUrls.add(uuid);
-                }
-            }
-        }
-
-        // Strategy B: Media URLs (Legacy fallback)
-        if (!newReadyItem) {
-            const selector = mode === 'image' ? IMAGE_RESULT_SELECTOR : VIDEO_RESULT_SELECTOR;
-            const candidates = document.querySelectorAll(selector);
-            for (const el of candidates) {
-                const src = (el.getAttribute('src') || '').trim();
-                if (src && !existingUrls.has(src)) {
-                    console.log('[Flow Automator] Detectado novo src:', src);
-                    const card = el.closest('[data-tile-id]') || el.closest('.sc-5923b123-0') || el.closest('[data-index]') || el.parentElement;
-                    newReadyItem = { card: card, wrapper: card, src };
-                    break;
-                }
-            }
-        }
-
-        // 3. Fallback: detect NEW card by DOM/container (even when media URL is lazy or different)
-        if (!newReadyItem) {
-            const cards = Array.from(scanExistingCards(mode));
-            for (const card of cards) {
-                if (!existingCards.has(card) && hasDownloadButton(card)) {
-                    const mediaEl = card.querySelector(mode === 'image' ? IMAGE_RESULT_SELECTOR : VIDEO_RESULT_SELECTOR);
-                    const mediaSrc = (mediaEl?.getAttribute('src') || '').trim();
-                    newReadyItem = {
-                        card,
-                        wrapper: card,
-                        src: mediaSrc || 'card-with-download-button'
-                    };
-                    break;
-                }
-            }
-        }
-
-        if (newReadyItem) {
-            console.log('[Flow Automator] New finished item found:', newReadyItem.src);
-            await sleep(1000); // Stabilize
-            return newReadyItem;
-        }
-
-        await sleep(1000);
-        const elapsed = Math.floor((Date.now() - startTime) / 1000);
-        if (!isGenerating) {
-            // If not generating and no new item, maybe it's still initializing or failed?
-            // checking simple "UPDATING" status
-            updateStatus('Aguardando... (' + elapsed + 's)');
-        }
-    }
-
-    return null; // Timeout
+function isDisabled(el) {
+    return !!(el?.disabled || el?.getAttribute('aria-disabled') === 'true');
 }
 
-function findLatestDownloadableCard(mode) {
-    const cards = Array.from(scanExistingCards(mode));
-    if (!cards.length) return null;
-    const sorted = cards
-        .slice()
-        .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
-    return sorted[0] || null;
-}
-
-async function clickDismissButton() {
+// Synthetic pointer+mouse sequence (single click event - avoids double submits)
+function fireClick(el) {
+    if (!el) return false;
+    try { el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (_) { }
+    const r = el.getBoundingClientRect();
+    const o = {
+        bubbles: true, cancelable: true, view: window,
+        clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+        pointerId: 1, isPrimary: true, pointerType: 'mouse', button: 0
+    };
     try {
-        const isVisibleCheck = (el) => {
-            if (!el || !el.isConnected) return false;
-            const st = window.getComputedStyle(el);
-            if (!st || st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return false;
-            const r = el.getBoundingClientRect();
-            return r.width > 4 && r.height > 4;
-        };
-
-        const norm = (v) => String(v || '').toLowerCase().trim();
-        const candidates = Array.from(document.querySelectorAll('button,[role="button"]')).filter(isVisibleCheck);
-
-        const btn = candidates.find((el) => {
-            const txt = norm(el.textContent);
-            const aria = norm(el.getAttribute('aria-label'));
-            const title = norm(el.getAttribute('title'));
-            const icon = norm(el.querySelector('i')?.textContent);
-            
-            // Suporte expandido para icones de fechar/conclusao e texto Dismiss
-            return (
-                icon === 'close' ||
-                icon === 'cancel' ||
-                icon === 'check' ||
-                icon === 'check_circle' ||
-                txt === 'dismiss' ||
-                txt === 'dismissed' ||
-                txt === 'dispensar' ||
-                txt === 'fechar' ||
-                txt.includes('close') ||
-                aria.includes('close') ||
-                aria.includes('dismiss') ||
-                aria.includes('fechar') ||
-                title.includes('close') ||
-                title.includes('fechar')
-            );
-        });
-
-        if (btn) {
-            console.log('[Flow Automator] Clicando para fechar toast/modal (' + (btn.textContent || 'icon') + ')...');
-            reactClick(btn);
-            await sleep(300);
-            return true;
-        }
+        ['pointerover', 'pointerenter', 'pointermove', 'pointerdown'].forEach(t => el.dispatchEvent(new PointerEvent(t, o)));
     } catch (_) { }
+    el.dispatchEvent(new MouseEvent('mousedown', o));
+    try { el.dispatchEvent(new PointerEvent('pointerup', o)); } catch (_) { }
+    el.dispatchEvent(new MouseEvent('mouseup', o));
+    el.dispatchEvent(new MouseEvent('click', o));
+    return true;
+}
 
+// Real (trusted) click through the background's chrome.debugger (CDP).
+// Flow ignores synthetic events on the "generate" button (checks isTrusted).
+async function trustedClick(el) {
+    if (!el) return false;
+    const token = 'fa' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    el.setAttribute('data-fa-click', token);
     try {
-        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true }));
-        document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true }));
-        await sleep(200);
-        return true;
+        const res = await chrome.runtime.sendMessage({ type: 'humanClickElement', token });
+        return !!res?.success;
     } catch (_) {
         return false;
+    } finally {
+        setTimeout(() => { try { el.removeAttribute('data-fa-click'); } catch (_) { } }, 1000);
     }
 }
 
-// ===== Main Processing Function (Replaces earlier implementation) =====
+function overlayRoot() {
+    return document.querySelector('.cdk-overlay-container');
+}
+
+function overlayButtons(selector = 'button, [role="menuitem"], [role="option"]') {
+    const root = overlayRoot();
+    if (!root) return [];
+    return Array.from(root.querySelectorAll(selector)).filter(isVisible);
+}
+
+// Closes menus/popovers (CDK listens to Escape on body, backdrop click closes too)
+async function closeOverlays() {
+    if (getSettingsPanel() && !getModelMenuItems().length) {
+        await closeSettingsPanel();
+    }
+    await escapeOverlays();
+}
+
+async function escapeOverlays() {
+    for (let i = 0; i < 3; i++) {
+        const backdrop = document.querySelector('.cdk-overlay-backdrop.cdk-overlay-backdrop-showing, .cdk-overlay-backdrop');
+        const openPanel = overlayRoot()?.querySelector('.cdk-overlay-pane [role="menu"], .cdk-overlay-pane [role="radiogroup"], .cdk-overlay-pane [role="dialog"]');
+        if (!backdrop && !openPanel) return;
+        const kb = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true };
+        (document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', kb));
+        document.body.dispatchEvent(new KeyboardEvent('keydown', kb));
+        if (backdrop) fireClick(backdrop);
+        await sleep(350);
+    }
+}
+
+// Dismiss "Dispensar"/"Dismiss" snackbars so they don't pile up
+function dismissToasts() {
+    overlayButtons('button').forEach(b => {
+        const t = norm(b.textContent);
+        if (t === 'dispensar' || t === 'dismiss' || t === 'fechar' || t === 'close') {
+            if (b.closest('.mat-mdc-snack-bar-container, mat-snack-bar-container, [class*="snack"], [role="status"], [role="alert"]')) {
+                try { b.click(); } catch (_) { }
+            }
+        }
+    });
+}
+
+function readToastTexts() {
+    const root = overlayRoot();
+    if (!root) return [];
+    return Array.from(root.querySelectorAll('.mat-mdc-snack-bar-container, mat-snack-bar-container, [class*="snack"], [role="status"], [role="alert"]'))
+        .filter(isVisible)
+        .map(t => ({ text: (t.innerText || '').replace(/\s+/g, ' ').trim(), icon: iconOf(t) }))
+        .filter(t => t.text);
+}
+
+const FAILURE_RE = /(erro|error|falh|fail|nao foi possivel|couldn.?t|could not|unable|violat|polic|nao e possivel|tente novamente|try again|limite|limit|quota|cota|creditos insuficientes|not enough credits|insufficient)/;
+
+// ===== Prompt box =====
+function getEditor() {
+    const eds = Array.from(document.querySelectorAll('.ProseMirror[contenteditable="true"], [contenteditable="true"][role="textbox"]')).filter(isVisible);
+    // Prefer the one inside the prompt box
+    return eds.find(e => e.closest('.base-prompt-box')) || eds[eds.length - 1] || null;
+}
+
+function getPromptBox() {
+    const ed = getEditor();
+    if (!ed) return null;
+    const known = ed.closest('.base-prompt-box');
+    if (known) return known;
+    let el = ed;
+    for (let i = 0; i < 10 && el; i++) {
+        el = el.parentElement;
+        if (el && getGenerateButtonIn(el)) return el;
+    }
+    return ed.parentElement;
+}
+
+function getGenerateButtonIn(scope) {
+    if (!scope) return null;
+    const btns = Array.from(scope.querySelectorAll('button'));
+    return btns.find(b => /iniciar gera|start gen|generate|gerar|criar|create/i.test(b.getAttribute('aria-label') || '') && iconOf(b) === 'arrow_forward')
+        || btns.find(b => iconOf(b) === 'arrow_forward')
+        || null;
+}
+
+function getGenerateButton() {
+    return getGenerateButtonIn(getPromptBox());
+}
+
+// The pill that opens the settings panel: contains a crop_* icon and "x1".."x4"
+function getSettingsTrigger() {
+    const box = getPromptBox() || document;
+    const btns = Array.from(box.querySelectorAll('button')).filter(isVisible);
+    return btns.find(b => /configura|settings/i.test(b.getAttribute('aria-label') || ''))
+        || btns.find(b => /crop_/.test(b.textContent || '') && /x[1-4]/.test(b.textContent || ''))
+        || null;
+}
+
+function editorText() {
+    const ed = getEditor();
+    return String(ed?.innerText || '').replace(/[​-‍﻿]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+async function fillPrompt(text) {
+    const wanted = String(text || '').replace(/\s+/g, ' ').trim();
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        const ed = getEditor();
+        if (!ed) { await sleep(800); continue; }
+        ed.focus();
+        await sleep(80);
+        // Select everything inside the editor and replace it (ProseMirror handles execCommand input)
+        try {
+            const sel = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(ed);
+            sel.removeAllRanges();
+            sel.addRange(range);
+        } catch (_) { }
+        document.execCommand('selectAll', false, null);
+        document.execCommand('insertText', false, wanted);
+        await sleep(400);
+        const got = editorText();
+        if (got === wanted || (wanted.length > 30 && got.includes(wanted.slice(0, 30)))) return true;
+        console.warn(`[Flow Automator] Prompt not confirmed (attempt ${attempt}):`, got.slice(0, 60));
+        await sleep(400);
+    }
+    return false;
+}
+
+// ===== Settings panel =====
+function getSettingsPanel() {
+    const root = overlayRoot();
+    if (!root) return null;
+    const panes = Array.from(root.querySelectorAll('.cdk-overlay-pane')).filter(isVisible);
+    // The panel with the image/video toggle
+    return panes.find(p => Array.from(p.querySelectorAll('button[role="radio"]')).some(b => ['image', 'videocam'].includes(iconOf(b)))) || null;
+}
+
+// The settings pill is a toggle whose internal state can get out of sync when the
+// panel is closed by Escape/outside click, so we click, verify, and retry.
+async function openSettingsPanel() {
+    let panel = getSettingsPanel();
+    if (panel) return panel;
+    for (let attempt = 1; attempt <= 4; attempt++) {
+        const trigger = getSettingsTrigger();
+        if (!trigger) throw new Error('Botao de configuracoes nao encontrado');
+        if (attempt < 4) fireClick(trigger); else await trustedClick(trigger);
+        panel = await waitFor(getSettingsPanel, 1500, 100);
+        if (panel) return panel;
+    }
+    throw new Error('Painel de configuracoes nao abriu');
+}
+
+async function closeSettingsPanel() {
+    for (let attempt = 1; attempt <= 3 && getSettingsPanel(); attempt++) {
+        const trigger = getSettingsTrigger();
+        if (trigger) fireClick(trigger);
+        if (await waitFor(() => !getSettingsPanel(), 1200, 100)) break;
+    }
+    if (getSettingsPanel()) await escapeOverlays();
+    await sleep(250);
+}
+
+function panelRadios() {
+    const panel = getSettingsPanel();
+    return panel ? Array.from(panel.querySelectorAll('button[role="radio"]')).filter(isVisible) : [];
+}
+
+function findRadio(pred) {
+    return panelRadios().find(b => pred({ icon: iconOf(b), label: norm(labelOf(b)), el: b })) || null;
+}
+
+async function selectRadio(pred, what, required = true) {
+    let btn = findRadio(pred);
+    if (!btn) {
+        if (required) throw new Error(`Opcao nao encontrada no Flow: ${what}`);
+        console.warn('[Flow Automator] Option not available:', what);
+        return false;
+    }
+    if (btn.getAttribute('aria-checked') === 'true') return true;
+    if (isDisabled(btn)) {
+        if (required) throw new Error(`Opcao desabilitada no Flow: ${what}`);
+        return false;
+    }
+    fireClick(btn);
+    const ok = await waitFor(() => findRadio(pred)?.getAttribute('aria-checked') === 'true', 2000, 100);
+    if (!ok) {
+        await trustedClick(findRadio(pred));
+        const ok2 = await waitFor(() => findRadio(pred)?.getAttribute('aria-checked') === 'true', 2500, 100);
+        if (!ok2 && required) throw new Error(`Nao foi possivel selecionar: ${what}`);
+    }
+    await sleep(250);
+    return true;
+}
+
+function getModelButton() {
+    const panel = getSettingsPanel();
+    if (!panel) return null;
+    const btns = Array.from(panel.querySelectorAll('button')).filter(isVisible);
+    return btns.find(b => /modelo|model/i.test(b.getAttribute('aria-label') || ''))
+        || btns.find(b => iconOf(b) === 'arrow_drop_down' || (b.textContent || '').includes('arrow_drop_down'))
+        || null;
+}
+
+function getModelMenuItems() {
+    const root = overlayRoot();
+    if (!root) return [];
+    const menus = Array.from(root.querySelectorAll('.flow-model-picker-panel, [role="menu"]')).filter(isVisible);
+    const menu = menus.find(m => m.classList.contains('flow-model-picker-panel')) || menus[menus.length - 1];
+    return menu ? Array.from(menu.querySelectorAll('[role="menuitem"], [role="menuitemradio"]')).filter(isVisible) : [];
+}
+
+// Canonical model names used by the current Flow UI
+const IMAGE_MODELS = ['Nano Banana Pro', 'Nano Banana 2', 'Nano Banana 2 Lite'];
+const VIDEO_MODELS = ['Omni 1.1 Flash', 'Veo 3.1 - Lite', 'Veo 3.1 - Fast', 'Veo 3.1 - Quality'];
+
+function resolveModelName(wanted, isImage) {
+    const w = compact(String(wanted || '').replace(/\[.*?\]/g, ''));
+    if (isImage) {
+        if (w.includes('pro')) return 'Nano Banana Pro';
+        if (w.includes('lite')) return 'Nano Banana 2 Lite';
+        if (w.includes('imagen') || w.includes('image4') || w.includes('imagem4')) {
+            console.warn('[Flow Automator] Imagen 4 nao existe mais no Flow; usando Nano Banana 2');
+        }
+        return 'Nano Banana 2';
+    }
+    if (w.includes('omni') || w.includes('flash')) return 'Omni 1.1 Flash';
+    if (w.includes('quality')) return 'Veo 3.1 - Quality';
+    if (w.includes('fast')) return 'Veo 3.1 - Fast';
+    return 'Veo 3.1 - Lite';
+}
+
+function modelMatches(text, target) {
+    const t = compact(String(text || '').replace(/arrow_drop_down|volume_up/g, ''));
+    const g = compact(target);
+    if (!t) return false;
+    if (t === g) return true;
+    // "Omni 1.1 Flash" could get a new version number: match by family
+    if (g.startsWith('omni')) return t.includes('omni');
+    // Nano Banana 2 must NOT match "Nano Banana 2 Lite"
+    return t.endsWith(g) && !(g === 'nanobanana2' && t.includes('lite'));
+}
+
+async function selectModel(targetName) {
+    const current = getModelButton();
+    if (!current) throw new Error('Seletor de modelo nao encontrado');
+    if (modelMatches(labelOf(current), targetName)) return true;
+
+    fireClick(current);
+    let items = await waitFor(() => { const i = getModelMenuItems(); return i.length ? i : null; }, 3000);
+    if (!items) {
+        await trustedClick(getModelButton());
+        items = await waitFor(() => { const i = getModelMenuItems(); return i.length ? i : null; }, 3000);
+    }
+    if (!items) throw new Error('Menu de modelos nao abriu');
+
+    const item = items.find(i => modelMatches(labelOf(i), targetName));
+    if (!item) {
+        const available = items.map(i => labelOf(i)).join(', ');
+        await closeOverlays();
+        throw new Error(`Modelo "${targetName}" nao disponivel. Disponiveis: ${available}`);
+    }
+    if (isDisabled(item)) throw new Error(`Modelo "${targetName}" desabilitado no seu plano`);
+    fireClick(item);
+    const ok = await waitFor(() => modelMatches(labelOf(getModelButton()), targetName), 3000, 120);
+    if (!ok) throw new Error(`Modelo "${targetName}" nao foi confirmado`);
+    await sleep(300);
+    return true;
+}
+
+const RATIO_ICONS = {
+    '16:9': 'crop_16_9',
+    '4:3': 'crop_landscape',
+    '1:1': 'crop_square',
+    '3:4': 'crop_portrait',
+    '9:16': 'crop_9_16'
+};
+
+function normalizeRatio(v) {
+    const raw = String(v || '').trim();
+    if (raw === 'portrait') return '9:16';
+    if (raw === 'landscape') return '16:9';
+    return RATIO_ICONS[raw] ? raw : '16:9';
+}
+
+// settings: { isImage, useFrames, model, ratio, duration, genResolution }
+async function applySettings(s) {
+    const steps = [];
+    await openSettingsPanel();
+
+    await selectRadio(r => r.icon === (s.isImage ? 'image' : 'videocam'), s.isImage ? 'Imagem' : 'Video');
+    steps.push(s.isImage ? 'modo:imagem' : 'modo:video');
+
+    if (!s.isImage) {
+        // "Frames" (start/end frame) sub-mode - also works for plain text-to-video
+        await selectRadio(r => r.icon === 'crop_free' || r.label === 'frames', 'Frames', false);
+    }
+
+    await selectModel(s.model);
+    steps.push('modelo:' + s.model);
+
+    const ratio = normalizeRatio(s.ratio);
+    const ratioOk = await selectRadio(r => r.icon === RATIO_ICONS[ratio] || r.label === ratio, 'Proporcao ' + ratio, false);
+    if (!ratioOk) {
+        // Video only supports 16:9 / 9:16 - pick the closest orientation
+        const fallback = (ratio === '3:4' || ratio === '9:16') ? '9:16' : '16:9';
+        await selectRadio(r => r.icon === RATIO_ICONS[fallback] || r.label === fallback, 'Proporcao ' + fallback);
+        steps.push('proporcao:' + fallback + '(fallback)');
+    } else {
+        steps.push('proporcao:' + ratio);
+    }
+
+    if (!s.isImage) {
+        if (s.genResolution) {
+            const want = norm(s.genResolution);
+            const ok = await selectRadio(r => r.label === want || r.label.startsWith(want), 'Resolucao ' + want, false);
+            if (ok) steps.push('res:' + want);
+        }
+        if (s.duration) {
+            const want = norm(s.duration);
+            const ok = await selectRadio(r => r.label === want, 'Duracao ' + want, false);
+            if (ok) steps.push('duracao:' + want);
+        }
+    }
+
+    await selectRadio(r => r.label === 'x1', 'Quantidade x1', false);
+    steps.push('qtd:x1');
+
+    await closeSettingsPanel();
+    console.log('[Flow Automator] Settings applied:', steps.join(' | '));
+    return steps;
+}
+
+// ===== Start-frame image upload (Video > Frames > "Inicio") =====
+function promptBoxImages() {
+    const box = getPromptBox();
+    return box ? Array.from(box.querySelectorAll('img')).filter(isVisible) : [];
+}
+
+async function clearPromptBoxImages() {
+    for (let i = 0; i < 4; i++) {
+        const box = getPromptBox();
+        if (!box) return;
+        const chip = Array.from(box.querySelectorAll('button')).find(b => iconOf(b) === 'cancel' && b.querySelector('img'))
+            || Array.from(box.querySelectorAll('button')).find(b => iconOf(b) === 'cancel');
+        if (!chip) return;
+        fireClick(chip);
+        await sleep(500);
+    }
+}
+
+function getStartFrameButton() {
+    const box = getPromptBox();
+    if (!box) return null;
+    const btns = Array.from(box.querySelectorAll('button')).filter(isVisible);
+    const byLabel = btns.find(b => /^(inicio|start|primeiro frame|first frame)$/.test(norm(labelOf(b))));
+    if (byLabel) return byLabel;
+    const swapIdx = btns.findIndex(b => iconOf(b) === 'swap_horiz');
+    return swapIdx > 0 ? btns[swapIdx - 1] : null;
+}
+
+function getMediaDialog() {
+    const root = overlayRoot();
+    if (!root) return null;
+    return Array.from(root.querySelectorAll('.cdk-overlay-pane')).filter(isVisible)
+        .find(p => Array.from(p.querySelectorAll('button')).some(b => iconOf(b) === 'upload')) || null;
+}
+
+function findAgreeButton() {
+    return overlayButtons('button').find(b => /^(concordo|aceito|i agree|agree|accept|ok|entendi|got it)$/.test(norm(b.textContent))) || null;
+}
+
+async function uploadStartFrame(image) {
+    if (!image?.data) return true;
+    await clearPromptBoxImages();
+
+    const slot = getStartFrameButton();
+    if (!slot) throw new Error('Slot "Inicio" (frame inicial) nao encontrado - modo Frames nao ativo?');
+    fireClick(slot);
+    let dialog = await waitFor(getMediaDialog, 3000);
+    if (!dialog) {
+        await trustedClick(getStartFrameButton());
+        dialog = await waitFor(getMediaDialog, 4000);
+    }
+    if (!dialog) throw new Error('Janela de selecao de imagem nao abriu');
+
+    const optionsBefore = dialog.querySelectorAll('[role="option"]').length;
+
+    // Upload runs in the page (MAIN world) so the file picker can be intercepted
+    const res = await chrome.runtime.sendMessage({
+        action: 'mainWorldUploadFile',
+        dataUrl: image.data,
+        fileName: image.name || 'frame.png',
+        fileType: image.type || 'image/png'
+    });
+    if (!res?.success) throw new Error('Falha ao enviar imagem: ' + (res?.error || 'desconhecido'));
+
+    // "Direitos de uso desta imagem" confirmation
+    const agree = await waitFor(findAgreeButton, 5000);
+    if (agree) {
+        fireClick(agree);
+        await sleep(500);
+    }
+
+    // Wait for the image to land in the start slot. If the dialog stays open,
+    // pick the newly uploaded item (first option) ourselves.
+    const filled = await waitFor(() => {
+        if (promptBoxImages().length > 0 && !getMediaDialog()) return true;
+        const d = getMediaDialog();
+        if (d) {
+            const opts = Array.from(d.querySelectorAll('[role="option"]')).filter(isVisible);
+            const busy = d.querySelector('mat-progress-bar, mat-spinner, mat-progress-spinner, [role="progressbar"]');
+            if (!busy && opts.length > optionsBefore) {
+                fireClick(opts[0]);
+            }
+        }
+        return false;
+    }, 60000, 800);
+    if (!filled) {
+        await closeOverlays();
+        throw new Error('Imagem enviada mas nao apareceu no frame inicial');
+    }
+    await sleep(500);
+    return true;
+}
+
+// ===== Result tiles =====
+const MEDIA_ID_RE = /flow-content\.google\/(?:image|video)\/([0-9a-f-]{16,})/i;
+
+function tileMediaIds(tile) {
+    const ids = new Set();
+    tile.querySelectorAll('[data-media-id]').forEach(e => ids.add(e.getAttribute('data-media-id')));
+    tile.querySelectorAll('img[src], video[src], source[src], video[poster]').forEach(e => {
+        const m = String(e.getAttribute('src') || e.getAttribute('poster') || '').match(MEDIA_ID_RE);
+        if (m) ids.add(m[1]);
+    });
+    return Array.from(ids);
+}
+
+function getTiles() {
+    return Array.from(document.querySelectorAll('flow-grid-tile-container'));
+}
+
+function allKnownMediaIds() {
+    const s = new Set();
+    getTiles().forEach(t => tileMediaIds(t).forEach(id => s.add(id)));
+    return s;
+}
+
+function findTileByMediaId(id) {
+    return getTiles().find(t => tileMediaIds(t).includes(id)) || null;
+}
+
+function tileText(tile) {
+    return norm(tile?.innerText || '');
+}
+
+function isTileComplete(tile, mode) {
+    if (!tile) return false;
+    const txt = tileText(tile);
+    if (/\b\d{1,3}\s?%/.test(txt)) return false;
+    if (mode === 'image') {
+        const img = tile.querySelector('flow-image-tile img, img');
+        return !!(img && MEDIA_ID_RE.test(img.getAttribute('src') || '') && img.complete !== false);
+    }
+    return !!tile.querySelector('flow-video-tile') && (tileMediaIds(tile).length > 0);
+}
+
+function tileFailureText(tile) {
+    if (!tile) return '';
+    const icons = Array.from(tile.querySelectorAll('mat-icon, .google-symbols')).map(i => i.textContent.trim());
+    const txt = tileText(tile);
+    const hasErrIcon = icons.some(i => ['error', 'warning', 'report', 'error_outline', 'block'].includes(i));
+    if (hasErrIcon || (FAILURE_RE.test(txt) && !tileMediaIds(tile).length)) {
+        return (tile.innerText || '').replace(/\s+/g, ' ').trim() || 'falha na geracao';
+    }
+    return '';
+}
+
+// Scroll the grid back to the top so the newest tile is rendered (virtual scroll)
+function scrollGridTop() {
+    const sc = document.querySelector('.virtual-scroll-container');
+    let el = sc;
+    for (let i = 0; i < 6 && el; i++) {
+        if (el.scrollHeight > el.clientHeight + 10) { el.scrollTop = 0; break; }
+        el = el.parentElement;
+    }
+}
+
+async function submitGeneration(beforeIds, beforeCount) {
+    const started = () => {
+        if (!editorText()) return true;                        // Flow clears the box on submit
+        const tiles = getTiles();
+        if (tiles.length > beforeCount) return true;
+        const top = tiles[0];
+        return !!(top && !tileMediaIds(top).some(id => beforeIds.has(id)) && /\d+\s?%/.test(tileText(top)));
+    };
+
+    const btn = await waitFor(() => { const b = getGenerateButton(); return b && !isDisabled(b) ? b : null; }, 6000);
+    if (!btn) throw new Error('Botao de gerar desabilitado (prompt nao aceito?)');
+
+    // Trusted (CDP) click first - synthetic clicks are ignored by Flow's submit
+    const clicked = await trustedClick(btn);
+    if (clicked && await waitFor(started, 6000, 200)) return 'trusted-click';
+    if (!clicked) console.warn('[Flow Automator] Trusted click failed, trying fallbacks');
+
+    fireClick(getGenerateButton());
+    if (await waitFor(started, 3000, 200)) return 'synthetic-click';
+
+    try { await chrome.runtime.sendMessage({ action: 'mainWorldPressEnter' }); } catch (_) { }
+    if (await waitFor(started, 5000, 200)) return 'enter';
+
+    // An immediate error toast explains why nothing started
+    const err = readToastTexts().find(t => t.icon === 'error' || FAILURE_RE.test(norm(t.text)));
+    throw new Error(err ? 'Flow: ' + err.text : 'A geracao nao iniciou');
+}
+
+async function waitForResult(beforeIds, mode, timeoutMs) {
+    const end = Date.now() + timeoutMs;
+    const toastsBefore = new Set(readToastTexts().map(t => t.text));
+    let lastLog = 0;
+    while (Date.now() < end) {
+        if (Date.now() - lastLog > 10000) { scrollGridTop(); lastLog = Date.now(); }
+        const tiles = getTiles();
+        // Newest tiles are rendered first
+        for (const tile of tiles.slice(0, 6)) {
+            const ids = tileMediaIds(tile);
+            const isNew = ids.length ? !ids.some(id => beforeIds.has(id)) : false;
+            if (isNew && isTileComplete(tile, mode)) {
+                return { tile, mediaId: ids[0] };
+            }
+        }
+        const top = tiles[0];
+        if (top && !tileMediaIds(top).some(id => beforeIds.has(id))) {
+            const fail = tileFailureText(top);
+            if (fail) throw new Error('Flow: ' + fail.slice(0, 160));
+            const pct = (top.innerText || '').match(/(\d{1,3})\s?%/);
+            if (pct) updateOverlay(`Gerando... ${pct[1]}%`);
+        }
+        const newErr = readToastTexts().find(t => !toastsBefore.has(t.text) && (t.icon === 'error' || FAILURE_RE.test(norm(t.text))));
+        if (newErr) throw new Error('Flow: ' + newErr.text.slice(0, 160));
+        await sleep(1500);
+    }
+    throw new Error('Timeout na geracao');
+}
+
+// ===== Download (context menu > download > resolution) =====
+async function openTileMenu(mediaId) {
+    await closeOverlays();
+    scrollGridTop();
+    const tile = await waitFor(() => findTileByMediaId(mediaId), 5000);
+    if (!tile) throw new Error('Card gerado nao encontrado para download');
+    tile.scrollIntoView({ block: 'center' });
+    await sleep(300);
+
+    const findDownloadItem = () => overlayButtons('[role="menuitem"]').find(i => iconOf(i) === 'download') || null;
+
+    // 1) right-click (context menu)
+    const r = tile.getBoundingClientRect();
+    tile.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, view: window, button: 2,
+        clientX: r.left + Math.min(60, r.width / 2), clientY: r.top + Math.min(60, r.height / 2)
+    }));
+    let item = await waitFor(findDownloadItem, 2500);
+
+    // 2) "more_vert" button on the tile hotbar
+    if (!item) {
+        tile.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+        tile.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+        await sleep(300);
+        const more = Array.from(tile.querySelectorAll('button')).find(b => iconOf(b) === 'more_vert');
+        if (more) {
+            fireClick(more);
+            item = await waitFor(findDownloadItem, 2500);
+        }
+    }
+    if (!item) throw new Error('Menu de download nao abriu');
+    return item;
+}
+
+function pickDownloadOption(items, mode, wanted) {
+    const enabled = items.filter(i => !isDisabled(i));
+    const lab = (i) => norm(labelOf(i));
+    if (mode === 'image') {
+        const order = ['4k', '2k', '1k'];
+        const w = String(wanted || '2k').toLowerCase();
+        const start = Math.max(0, order.indexOf(w));
+        for (const res of order.slice(start)) {
+            const it = enabled.find(i => lab(i).startsWith(res));
+            if (it) return it;
+        }
+        return enabled[0] || null;
+    }
+    // video: "270p GIF", "<res> Tamanho original", "<res> Aprimorada"...
+    const gif = enabled.find(i => lab(i).includes('gif'));
+    const nonGif = enabled.filter(i => !lab(i).includes('gif'));
+    const original = nonGif.find(i => /original/.test(lab(i))) || nonGif[0] || null;
+    const upscaled = nonGif.filter(i => i !== original);
+    if (wanted === 'gif') return gif || original;
+    if (wanted === 'upscale') return upscaled[upscaled.length - 1] || original;
+    return original || gif;
+}
+
+async function downloadResult(result, mode, config) {
+    const wanted = mode === 'image'
+        ? String(config.imageResolution || '2k').toLowerCase()
+        : normalizeVideoDownload(config.videoResolution);
+
+    const dlItem = await openTileMenu(result.mediaId);
+    fireClick(dlItem);
+    const sub = await waitFor(() => {
+        const items = overlayButtons('[role="menuitem"]').filter(i => /\d+\s?(k|p)\b/i.test(labelOf(i)));
+        return items.length ? items : null;
+    }, 3000);
+    if (!sub) throw new Error('Opcoes de resolucao do download nao apareceram');
+
+    const choice = pickDownloadOption(sub, mode, wanted);
+    if (!choice) throw new Error('Nenhuma opcao de download disponivel');
+    console.log('[Flow Automator] Download option:', labelOf(choice));
+
+    // Tell background which name to give to the next Flow download
+    try {
+        await chrome.runtime.sendMessage({
+            action: 'registerDownload',
+            url: `https://flow-content.google/${mode === 'image' ? 'image' : 'video'}/${result.mediaId}`,
+            type: mode === 'image' ? 'image' : 'video'
+        });
+    } catch (_) { }
+
+    const before = lastFlowDownloadDetectedAt;
+    fireClick(choice);
+    updateOverlay(/aprimor|upscal|enhanc|2k|4k/i.test(labelOf(choice)) ? 'Aprimorando e baixando...' : 'Baixando...');
+
+    const ok = await waitFor(() => lastFlowDownloadDetectedAt > before, 180000, 500);
+    await sleep(800);
+    dismissToasts();
+    if (!ok) throw new Error('Download nao foi detectado');
+    return true;
+}
+
+function normalizeVideoDownload(value) {
+    const t = String(value || '').toLowerCase();
+    if (t === 'gif' || t.includes('270')) return 'gif';
+    if (t === 'upscale' || t.includes('1080') || t.includes('4k')) return 'upscale';
+    return 'original';
+}
+
+// ===== Main flow =====
+function pickAspectRatio(config) {
+    let ratio = config.aspectRatio || '16:9';
+    if (config.randomizeAspectRatio) {
+        const opts = [];
+        if (config.randomIncludeLandscape) opts.push('16:9');
+        if (config.randomIncludePortrait) opts.push('9:16');
+        if (config.mode === 'image') {
+            if (config.randomIncludeLandscape43) opts.push('4:3');
+            if (config.randomIncludeSquare) opts.push('1:1');
+            if (config.randomIncludePortrait34) opts.push('3:4');
+        }
+        if (opts.length) ratio = opts[Math.floor(Math.random() * opts.length)];
+    }
+    return ratio;
+}
+
+async function runOnce(prompt, config, image) {
+    const mode = config.mode === 'image' ? 'image' : 'video';
+    const isImage = mode === 'image';
+
+    await closeOverlays();
+    const ready = await waitFor(() => getEditor() && getSettingsTrigger(), 20000, 500);
+    if (!ready) throw new Error('Caixa de prompt do Flow nao encontrada (abra um projeto)');
+
+    // 1. Settings
+    updateOverlay('Configurando modo/modelo/proporcao...');
+    const settings = {
+        isImage,
+        model: resolveModelName(isImage ? config.imageModel : config.videoModel, isImage),
+        ratio: image?.aspectRatio && !isImage ? image.aspectRatio : pickAspectRatio(config),
+        duration: config.videoDuration,
+        genResolution: config.videoGenResolution
+    };
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+        try { await applySettings(settings); lastErr = null; break; } catch (e) {
+            lastErr = e;
+            console.warn('[Flow Automator] applySettings failed:', e.message);
+            await closeOverlays();
+            await sleep(800);
+        }
+    }
+    if (lastErr) throw lastErr;
+
+    // 2. Start frame (video only)
+    if (!isImage && image?.data) {
+        updateOverlay('Enviando imagem (frame inicial)...');
+        await uploadStartFrame(image);
+    } else if (!isImage) {
+        await clearPromptBoxImages();
+    }
+
+    // 3. Prompt
+    updateOverlay('Inserindo prompt...');
+    if (!await fillPrompt(prompt)) throw new Error('Falha ao inserir prompt');
+    await sleep(500);
+
+    // 4. Generate
+    updateOverlay('Iniciando geracao...');
+    scrollGridTop();
+    const beforeIds = allKnownMediaIds();
+    const beforeCount = getTiles().length;
+    const how = await submitGeneration(beforeIds, beforeCount);
+    console.log('[Flow Automator] Generation started via', how);
+
+    // 5. Wait
+    updateOverlay('Aguardando geracao...');
+    const timeoutMs = Math.max(60, parseInt(config.generationTimeout) || 180) * 1000;
+    const result = await waitForResult(beforeIds, mode, timeoutMs);
+    console.log('[Flow Automator] New media:', result.mediaId);
+
+    // 6. Download
+    if (config.autoDownload !== false) {
+        updateOverlay('Fazendo download...');
+        let dlErr = null;
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            try { await downloadResult(result, mode, config); dlErr = null; break; } catch (e) {
+                dlErr = e;
+                console.warn('[Flow Automator] Download attempt failed:', e.message);
+                await closeOverlays();
+                await sleep(1500);
+            }
+        }
+        if (dlErr) throw dlErr;
+    }
+    return result;
+}
+
 async function processPrompt(prompt, index, config, image = null) {
     const fallbackPrompt = 'Animate this image with natural cinematic motion, preserving subject identity and scene details.';
     const effectivePrompt = String(prompt || '').trim() || fallbackPrompt;
-    console.log('[Flow Automator] Processing prompt via temp logic:', effectivePrompt);
 
-    // Guard against concurrent calls -- a new processPrompt must not start while another is running
     if (isProcessing) {
         console.warn('[Flow Automator] Already processing a prompt, ignoring new request');
         return;
@@ -1064,746 +877,56 @@ async function processPrompt(prompt, index, config, image = null) {
     isProcessing = true;
     currentPromptText = effectivePrompt;
 
+    const maxAttempts = Math.max(1, Math.min(5, parseInt(config.maxRetries) || 2));
     try {
         showOverlay('Processando...', effectivePrompt);
         setStatusProgress(index + 1, config.totalPrompts || 1);
 
-        // One-time dashboard setup before the very first prompt
-        if (index === 0) {
-            updateOverlay('Configurando dashboard...');
-            await initDashboardSetup(config);
-        }
-
-        // Improved Page Ready Wait: Wait for history to likely load
-        await waitForPageReady();
-        // Scan existing URLs to avoid "History Loaded Late" race condition
-        // We assume anything currently on page is "Old"
-        const scanMode = config.mode === 'image' ? 'image' : 'video';
-        const existingUrls = scanExistingUrls(scanMode);
-        const existingCards = scanExistingCards(scanMode);
-        console.log(`[Flow Automator] Initial scan: ${existingUrls.size} existing items.`);
-
-        // 1. Determine Mode
-        let mode = 'text-to-video';
-        if (image) {
-            mode = 'image-to-video';
-        } else if (config.mode === 'image') {
-            mode = 'create-image';
-        } else if (config.mode === 'image-to-video' || config.mode === 'frames') {
-            // Only force image-to-video if no image provided but user explicitly wants that mode 
-            // (e.g. if they already have an image in the slot manually)
-            mode = 'image-to-video';
-        }
-
-
-        // 2. If image-to-video with source image, upload FIRST (requested flow).
-        if (mode === 'image-to-video' && image) {
-            updateOverlay('Enviando imagem (Inicial)...');
-            const uploadSuccess = await uploadImage(
-                image.data,
-                image.name,
-                image.type,
-                image.aspectRatio === '9:16' ? 'portrait' : 'landscape'
-            );
-            if (!uploadSuccess) throw new Error('Falha no upload da imagem');
-            await sleep(700);
-        }
-
-        // 3. Select Mode, Model, Ratio (all in MAIN world via mainWorldSelectSettings)
-        updateOverlay('Configurando modo/modelo/proporcao...');
-
-        // Determine aspect ratio for this prompt
-        let targetRatio = config.aspectRatio || '16:9';
-        if (config.randomizeAspectRatio) {
-            const options = [];
-            if (config.randomIncludeLandscape) options.push('16:9');
-            if (config.randomIncludeLandscape43) options.push('4:3');
-            if (config.randomIncludeSquare) options.push('1:1');
-            if (config.randomIncludePortrait34) options.push('3:4');
-            if (config.randomIncludePortrait) options.push('9:16');
-            if (options.length > 0) {
-                targetRatio = options[Math.floor(Math.random() * options.length)];
-                console.log('[Flow Automator] Randomized ratio:', targetRatio);
-            }
-        }
-
-        const settingsConfig = {
-            mode: mode,  // 'create-image' | 'text-to-video' | 'image-to-video'
-            imageModel: config.imageModel || 'Nano Banana 2',
-            videoModel: config.videoModel || 'Veo 3.1 - Lite [Lower Priority]',
-            modelKey: normalizeImageModelKey(config.imageModel || 'Nano Banana 2'),
-            aspectRatio: targetRatio
-        };
-        console.log('[Flow Automator] settingsConfig:', settingsConfig);
-
-        let settingsOk = false;
-        for (let attempt = 1; attempt <= 3 && !settingsOk; attempt++) {
-            settingsOk = await applyFlowSettings(settingsConfig);
-            if (!settingsOk) {
-                console.warn(`[Flow Automator] applyFlowSettings failed (attempt ${attempt}/3)`);
-                await sleep(500);
-            }
-        }
-        if (!settingsOk) {
-            throw new Error('Falha ao aplicar modo/modelo/proporcao (modelo nao confirmado)');
-        }
-        await sleep(1000); // Wait for settings menu to fully close
-
-        // Video-specific: duration setting
-        if (mode !== 'create-image' && config.videoDuration) {
-            updateOverlay(`Ajustando duracao (${config.videoDuration})...`);
-            await setVideoDuration(config.videoDuration);
-        }
-
-
-        // 4. Input Prompt
-        updateOverlay('Inserindo prompt...');
-        const inputSuccess = await ensurePromptInput(effectivePrompt, 3);
-        if (!inputSuccess) throw new Error('Falha ao inserir prompt (campo permaneceu vazio)');
-        await sleep(1500);
-
-        // 5. Click Generate - wait for arrow_forward button to be enabled (like reference extension)
-        updateOverlay('Iniciando geracao...');
-
-        // Verify text is actually in the editor before trying to submit
-        const editorEl = document.querySelector('[data-slate-editor="true"]');
-        const editorText = editorEl ? (editorEl.innerText || editorEl.textContent || '').trim() : '';
-        console.log('[Flow Automator] Editor text after insert:', editorText);
-        if (!editorText) {
-            throw new Error('Editor vazio apos insercao - texto nao foi aceito pelo Slate');
-        }
-
-        // Find generate button: look for arrow_forward icon (not aria-disabled) 
-        // scoped to the editor's parent container
-        let enabledGenerateBtn = null;
-        let retries = 20;
-        while (retries > 0) {
-            const editorScope = document.querySelector('[data-slate-editor="true"]');
-            let scope = editorScope;
-            // Walk up max 10 levels to find the button near the editor
-            for (let depth = 0; scope && depth < 10; depth++, scope = scope.parentElement) {
-                const buttons = Array.from(scope.querySelectorAll('button, [role="button"]'));
-                const found = buttons.find(b => {
-                    if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
-                    const text = (b.textContent || '').trim();
-                    const icon = b.querySelector('i, svg');
-                    const iconText = icon ? (icon.textContent || '').trim() : '';
-                    const ariaLabel = (b.getAttribute('aria-label') || '').toLowerCase();
-                    
-                    return iconText === 'arrow_forward' || 
-                           text === 'Criar' || 
-                           text === 'Create' ||
-                           ariaLabel.includes('gerar') ||
-                           ariaLabel.includes('generate');
-                });
-                if (found) { enabledGenerateBtn = found; break; }
-            }
-            if (enabledGenerateBtn) break;
-            await sleep(500);
-            retries--;
-        }
-
-        if (!enabledGenerateBtn) {
-            console.warn('[Flow Automator] Generate button not found near editor, falling back to global search');
-            enabledGenerateBtn = document.evaluate(SELECTORS.GENERATE_BUTTON_XPATH, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-        }
-
-        if (enabledGenerateBtn) {
-            // MARK the button with a unique attribute to ensure we click the RIGHT one via background
-            const uniqueId = 'btn_' + Date.now();
-            enabledGenerateBtn.setAttribute('data-flow-target-click', uniqueId);
-            const targetXpath = `//*[@data-flow-target-click='${uniqueId}']`;
-
-            // Re-scan right before clicking to avoid lazy-load race conditions
-            const finalExistingUrls = scanExistingUrls(scanMode);
-            console.log(`[Flow Automator] Final pre-click scan: ${finalExistingUrls.size} items.`);
-
-            let cardResult = null;
-            let emptyCommandRetries = 0;
-            const maxEmptyCommandRetries = 1;
+        let lastError = null;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
-                updateOverlay('Iniciando geração...');
-                
-                // 1. Local human events (Pointer/Mouse)
-                try {
-                    const rect = enabledGenerateBtn.getBoundingClientRect();
-                    const x = rect.left + rect.width / 2;
-                    const y = rect.top + rect.height / 2;
-                    const common = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
-                    try { enabledGenerateBtn.dispatchEvent(new PointerEvent('pointerdown', common)); } catch (_) { }
-                    enabledGenerateBtn.dispatchEvent(new MouseEvent('mousedown', common));
-                    try { enabledGenerateBtn.dispatchEvent(new PointerEvent('pointerup', common)); } catch (_) { }
-                    enabledGenerateBtn.dispatchEvent(new MouseEvent('mouseup', common));
-                    enabledGenerateBtn.dispatchEvent(new MouseEvent('click', common));
-                } catch (_) { }
-                await sleep(200);
-
-                // 2. Native click
-                if (typeof enabledGenerateBtn.click === 'function') enabledGenerateBtn.click();
-                await sleep(200);
-
-                // 3. Background click (redundancy)
-                await chrome.runtime.sendMessage({ 
-                    action: 'mainWorldReactClick', 
-                    xpath: targetXpath 
-                });
-                
-                // 4. Press Enter as final fallback
-                await realPressEnter();
-
-                // Cleanup
-                enabledGenerateBtn.removeAttribute('data-flow-target-click');
-                
-                await sleep(2000); // Wait for generation to start 
-                
-                updateOverlay('Aguardando geracao...');
-                cardResult = await waitForNewCard(finalExistingUrls, existingCards, config.generationTimeout * 1000, scanMode);
+                if (attempt > 1) updateOverlay(`Tentativa ${attempt}/${maxAttempts}...`);
+                await runOnce(effectivePrompt, config, image);
+                lastError = null;
+                break;
             } catch (e) {
-                // Retry specifically for "empty command" error
-                if (e.message.includes('fornecer um comando') && emptyCommandRetries < maxEmptyCommandRetries) {
-                    emptyCommandRetries++;
-                    console.warn('[Flow Automator] Empty command detected. Retry ' + emptyCommandRetries + '/' + maxEmptyCommandRetries + '...');
-                    // Dismiss the error toast so waitForNewCard doesn't re-detect it
-                    await clickDismissButton();
-                    // Hide remaining sonner error toasts (can't remove from DOM — React crashes)
-                    const errorToasts = document.querySelectorAll('[data-sonner-toast]');
-                    for (const toast of errorToasts) {
-                        const icon = toast.querySelector('i');
-                        if (icon && icon.textContent.trim() === 'error') {
-                            console.warn('[Flow Automator] Hiding error toast:', toast.textContent?.trim()?.substring(0, 80));
-                            toast.style.display = 'none';
-                            toast.setAttribute('hidden', '');
-                        }
-                    }
-                    await sleep(2000);
-
-                    // Update existing sets in case partial generation occurred
-                    const newUrls = scanExistingUrls(scanMode);
-                    for (const url of newUrls) existingUrls.add(url);
-                    const newCards = scanExistingCards(scanMode);
-                    for (const card of newCards) existingCards.add(card);
-
-                    // Re-fill prompt with full retry attempts
-                    await ensurePromptInput(effectivePrompt, 3);
-                    await sleep(2000);
-                    await realClickByXPath(SELECTORS.GENERATE_BUTTON_XPATH);
-                    await sleep(500);
-                    await realPressEnter();
-                    await sleep(1000);
-                    cardResult = await waitForNewCard(existingUrls, existingCards, config.generationTimeout * 1000, scanMode);
-                } else {
-                    throw e;
-                }
+                lastError = e;
+                console.error(`[Flow Automator] Attempt ${attempt}/${maxAttempts} failed:`, e.message);
+                updateOverlay('Erro: ' + e.message);
+                await closeOverlays();
+                // Policy / credit errors will not fix themselves on retry
+                if (/polic|violat|credit|credito|quota|cota|desabilitado|nao disponivel/i.test(e.message)) break;
+                await sleep(3000);
             }
-
-            if (!cardResult) throw new Error('Timeout na geracao (card nao apareceu)');
-
-            console.log('[Flow Automator] Found new card');
-
-            // Now download...
-            updateOverlay('Fazendo download...');
-            await sleep(1000);
-
-            let downloadSuccess = false;
-            if (mode === 'create-image') {
-                downloadSuccess = await downloadFromImageCard(cardResult.wrapper || cardResult.card, config.imageResolution || '2k');
-            } else {
-                const desiredVideoRes = normalizeVideoResolution(config.videoResolution || (config.doUpscale ? '1080p' : '720p'));
-                downloadSuccess = await downloadFromVideoCard(cardResult.wrapper || cardResult.card, desiredVideoRes);
-            }
-
-            if (!downloadSuccess) throw new Error('Falha no download');
-
-            console.log('[Flow Automator] Prompt completed successfully');
-            sendComplete(true, null, effectivePrompt);
-
-        } else {
-            console.error("Generate button not found or disabled");
-            throw new Error("Generate button invalid or disabled");
         }
+        if (lastError) throw lastError;
+
+        console.log('[Flow Automator] Prompt completed successfully');
+        sendComplete(true, null, effectivePrompt);
     } catch (e) {
         console.error('[Flow Automator] Error processing prompt:', e);
         updateOverlay('Erro: ' + e.message);
-        await sleep(3000); // Give user time to see error
+        await sleep(2500);
         sendComplete(false, null, effectivePrompt, e.message);
     } finally {
         isProcessing = false;
     }
 }
 
+// Expose for manual debugging from the console of the extension's isolated world
+window.__flowAutomator = { applySettings, fillPrompt, uploadStartFrame, getTiles, allKnownMediaIds, downloadResult, runOnce };
 
-// ===== Download video from a specific card =====
-async function downloadFromVideoCard(card, targetResolution) {
-    console.log('[Flow Automator] Starting VIDEO download, target:', targetResolution);
-
-    // Get video URL from card FIRST
-    const video = card.querySelector('video');
-    const videoUrl = video ? video.getAttribute('src') : '';
-
-    if (videoUrl) {
-        console.log('[Flow Automator] Video URL found:', videoUrl.substring(0, 100) + '...');
-        // Register this URL with background for renaming
-        chrome.runtime.sendMessage({
-            action: 'registerDownload',
-            url: videoUrl,
-            type: 'video'
-        });
-    }
-
-    // CSS :hover cannot be triggered by JS events.
-    // Strategy: inject a temporary <style> that forces child buttons visible on this card,
-    // find the 3-dot button, click it, then remove the injected style.
-    card.scrollIntoView({ block: 'center' });
-    await sleep(300);
-
-    const isVisible = (el) => {
-        if (!el || !el.isConnected) return false;
-        const style = window.getComputedStyle(el);
-        if (!style || style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-        const r = el.getBoundingClientRect();
-        return r.width > 4 && r.height > 4;
-    };
-    const norm = (v) => String(v || '').toLowerCase().trim();
-    const iconText = (el) => norm(el?.querySelector('i')?.textContent);
-
-    const findMoreBtn = (container = document.body) => {
-        return Array.from(container.querySelectorAll('button, [role="button"], div')).find(b => {
-            const iTxt = norm(b.querySelector('i')?.textContent);
-            const lbl = norm((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('data-tooltip') || ''));
-            const hasIcon = iTxt.includes('more_vert') || iTxt.includes('more_horiz');
-            const hasLabel = lbl.includes('more') || lbl.includes('mais') || lbl.includes('menu') || lbl.includes('opcoes');
-            return hasIcon || hasLabel;
-        });
-    };
-
-    const findMainMenuWithDownload = () => {
-        const menus = Array.from(document.querySelectorAll('[role="menu"], div[class*="menu-content"]')).filter(isVisible);
-        return menus.find(m => {
-            const items = Array.from(m.querySelectorAll('[role="menuitem"], [role="menuitemradio"], div[class*="menuitem"]'));
-            return items.some(it => {
-                const iTxt = norm(it.querySelector('i')?.textContent);
-                const txt = norm(it.textContent);
-                return iTxt.includes('download') || txt.includes('baixar') || txt.includes('download');
-            });
-        }) || null;
-    };
-
-    // 1) CSS injection approach: force card's overlay buttons visible, click 3-dots
-    let mainMenu = null;
-    const injectStyle = () => {
-        const s = document.createElement('style');
-        s.id = '__flow_hover_fix__';
-        // Make all buttons/overlays inside card visible regardless of hover state
-        s.textContent = `
-            [data-flow-target-card] button,
-            [data-flow-target-card] [role="button"],
-            [data-flow-target-card] i,
-            [data-flow-target-card] span,
-            [data-flow-target-card] [class*="overlay"],
-            [data-flow-target-card] [class*="action"],
-            [data-flow-target-card] [class*="menu"] {
-                opacity: 1 !important;
-                visibility: visible !important;
-                pointer-events: auto !important;
-                display: block !important;
-            }
-        `;
-        document.head.appendChild(s);
-    };
-    const removeStyle = () => {
-        const s = document.getElementById('__flow_hover_fix__');
-        if (s) s.remove();
-    };
-
-    // Tag the card temporarily so CSS targets it
-    card.setAttribute('data-flow-target-card', '1');
-    injectStyle();
-    await sleep(300);
-
-    // Force data-state="open" on nested spans (same as image — bypass hover requirement)
-    const stateSpans = card.querySelectorAll('span[data-state]');
-    for (const span of stateSpans) {
-        if (span.getAttribute('data-state') !== 'open') {
-            span.setAttribute('data-state', 'open');
-        }
-    }
-    await sleep(400);
-
-    // Real CDP Hover over the card center to trigger React's hover state
-    const rect = card.getBoundingClientRect();
-    const cx = rect.left + rect.width / 2;
-    const cy = rect.top + rect.height / 2;
-    console.log('[Flow Automator] Real CDP Hover (Video) at:', Math.round(cx), Math.round(cy));
-    await chrome.runtime.sendMessage({ type: 'humanHover', x: cx, y: cy });
-    await sleep(800);
-
-    const moreBtn = findMoreBtn(card);
-    if (moreBtn) {
-        console.log('[Flow Automator] Found 3-dots button, clicking via CDP...');
-        const btnRect = moreBtn.getBoundingClientRect();
-        const bx = btnRect.left + btnRect.width / 2;
-        const by = btnRect.top + btnRect.height / 2;
-        await chrome.runtime.sendMessage({ type: 'humanClick', x: bx, y: by });
-        await sleep(1000);
-        mainMenu = findMainMenuWithDownload();
-    } else {
-        console.log('[Flow Automator] 3-dots button not found after hover');
-    }
-
-    // Always clean up
-    removeStyle();
-    card.removeAttribute('data-flow-target-card');
-
-    // 2) Fallback: hover events
-    if (!mainMenu) {
-        console.log('[Flow Automator] Trying hover events fallback...');
-        for (const el of [card, video].filter(Boolean)) {
-            try {
-                const rect = el.getBoundingClientRect();
-                const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
-                el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: cx, clientY: cy }));
-                el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: cx, clientY: cy }));
-                el.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: cx, clientY: cy }));
-            } catch (_) { }
-        }
-        await sleep(500);
-        const moreBtnHover = findMoreBtn(card) || findMoreBtn(document.body);
-        if (moreBtnHover) {
-            reactClick(moreBtnHover);
-            await sleep(600);
-            mainMenu = findMainMenuWithDownload();
-        }
-    }
-
-    // 3) Final fallback: right-click context menu
-    if (!mainMenu) {
-        const target = video || card;
-        console.log('[Flow Automator] Trying right-click context menu as final fallback...');
-        rightClick(target);
-        await sleep(800);
-        mainMenu = findMainMenuWithDownload();
-    }
-
-
-    if (!mainMenu) {
-        console.log('[Flow Automator] Main context menu not found');
-        // Fallback: direct download from video src
-        return await fallbackDownloadVideo(card, videoUrl);
-    }
-
-    const downloadEntry = Array.from(mainMenu.querySelectorAll('[role="menuitem"]')).find(it => {
-        const txt = norm(it.textContent);
-        const iTxt = iconText(it);
-        const hasSub = it.getAttribute('aria-haspopup') === 'menu';
-        return iTxt.includes('download') || txt.includes('download') || txt.includes('baixar') || hasSub;
-    });
-    if (!downloadEntry) {
-        console.log('[Flow Automator] Download entry not found in context menu');
-        return await fallbackDownloadVideo(card, videoUrl);
-    }
-
-    // 3) Open download submenu (hover + click, because Radix may require pointer intent)
-    downloadEntry.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    downloadEntry.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-    reactClick(downloadEntry);
-    await sleep(500);
-
-    // 4) Find submenu with resolution options by numeric labels (language agnostic)
-    const parseResolution = (text) => {
-        const t = norm(text);
-        if (t.includes('4k')) return '4k';
-        if (t.includes('1080')) return '1080p';
-        if (t.includes('720')) return '720p';
-        if (t.includes('270')) return '270p';
-        return null;
-    };
-
-    const resMenu = Array.from(document.querySelectorAll('[role="menu"]'))
-        .filter(isVisible)
-        .find(m => {
-            const items = Array.from(m.querySelectorAll('[role="menuitem"]'));
-            return items.some(it => parseResolution(it.textContent));
-        });
-    if (!resMenu) {
-        console.log('[Flow Automator] Resolution submenu not found');
-        return await fallbackDownloadVideo(card, videoUrl);
-    }
-
-    const items = Array.from(resMenu.querySelectorAll('[role="menuitem"]')).map(el => ({
-        el,
-        res: parseResolution(el.textContent),
-        disabled: el.getAttribute('aria-disabled') === 'true'
-    })).filter(x => x.res);
-    if (!items.length) {
-        console.log('[Flow Automator] No resolution options found');
-        return await fallbackDownloadVideo(card, videoUrl);
-    }
-
-    const preferred = normalizeVideoResolution(targetResolution);
-    const fallbackOrder = preferred === '4k'
-        ? ['4k', '1080p', '720p', '270p']
-        : preferred === '1080p'
-            ? ['1080p', '720p', '270p']
-            : preferred === '720p'
-                ? ['720p', '270p']
-                : ['270p'];
-
-    let chosen = null;
-    for (const r of fallbackOrder) {
-        chosen = items.find(x => x.res === r && !x.disabled);
-        if (chosen) break;
-    }
-    if (!chosen) {
-        chosen = items.find(x => !x.disabled) || null;
-    }
-    if (!chosen) {
-        console.log('[Flow Automator] All resolution options are disabled');
-        return await fallbackDownloadVideo(card, videoUrl);
-    }
-
-    console.log('[Flow Automator] Clicking video resolution:', chosen.res);
-    reactClick(chosen.el);
-    await sleep(500);
-    return true;
-}
-
-// Fallback: download video directly (when menu-based download fails)
-// Videos in the grid show as thumbnail <img> tags, not <video> elements.
-async function fallbackDownloadVideo(card, videoUrl) {
-    console.log('[Flow Automator] Falling back to direct video download...');
-    const doDownload = async (url, label) => {
-        console.log('[Flow Automator] Using ' + label + ':', url.substring(0, 80));
-        const absolute = url.startsWith('/') ? 'https://labs.google' + url : url;
-        chrome.runtime.sendMessage({ action: 'registerDownload', url: absolute, type: 'video' });
-        await sleep(300);
-        chrome.runtime.sendMessage({ type: 'downloadUrl', url: absolute, fileType: 'video' });
-        await sleep(500);
-        return true;
-    };
-
-    // 1. Try existing videoUrl first
-    if (videoUrl) {
-        return await doDownload(videoUrl, 'existing video URL');
-    }
-
-    // 2. Try img redirect URL (Flow grid shows video thumbnails as <img> with getMediaUrlRedirect)
-    const img = card.querySelector('img');
-    const imgSrc = (img?.getAttribute('src') || img?.src || '').trim();
-    if (imgSrc && imgSrc.includes('getMediaUrlRedirect')) {
-        return await doDownload(imgSrc, 'image redirect URL');
-    }
-
-    // 3. Wait a bit then retry img src and video element (video encoding takes time)
-    for (let attempt = 0; attempt < 10; attempt++) {
-        await sleep(2000);
-        // Re-check img src (might have updated)
-        const img2 = card.querySelector('img');
-        const imgSrc2 = (img2?.getAttribute('src') || img2?.src || '').trim();
-        if (imgSrc2 && imgSrc2 !== imgSrc) {
-            if (imgSrc2.includes('getMediaUrlRedirect')) {
-                return await doDownload(imgSrc2, 'image redirect URL (retry ' + (attempt + 1) + ')');
-            }
-            return await doDownload(imgSrc2, 'image src (retry ' + (attempt + 1) + ')');
-        }
-        // Check for video element
-        const video = card.querySelector('video');
-        const src = video ? (video.getAttribute('src') || video.src || '').trim() : '';
-        if (src) {
-            return await doDownload(src, 'video src (retry ' + (attempt + 1) + ')');
-        }
-        updateOverlay('Aguardando video renderizar... (' + (attempt + 1) + 's)');
-    }
-
-    console.log('[Flow Automator] No video/download URL found after waiting.');
-    return false;
-}
-
-// ===== Download image from a specific card =====
-async function downloadFromImageCard(card, resolution) {
-    console.log('[Flow Automator] Iniciando download de imagem...');
-    updateOverlay('Preparando download...');
-
-    card.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    // CSS injection trick to force buttons visible
-    const injectStyle = () => {
-        const s = document.createElement('style');
-        s.id = '__flow_hover_fix_img__';
-        s.textContent = `
-            [data-flow-target-card-img] button,
-            [data-flow-target-card-img] [role="button"],
-            [data-flow-target-card-img] i,
-            [data-flow-target-card-img] span,
-            [data-flow-target-card-img] [class*="overlay"] {
-                opacity: 1 !important;
-                visibility: visible !important;
-                display: flex !important;
-                pointer-events: auto !important;
-            }
-        `;
-        document.head.appendChild(s);
-    };
-    const removeStyle = () => {
-        const s = document.getElementById('__flow_hover_fix_img__');
-        if (s) s.remove();
-    };
-
-    card.setAttribute('data-flow-target-card-img', '1');
-    injectStyle();
-    await sleep(300);
-
-    // Force data-state="open" on all nested spans to trigger React's overlay visibility,
-    // bypassing the need for a real hover event (which CDP might not reliably trigger).
-    const stateSpans = card.querySelectorAll('span[data-state]');
-    for (const span of stateSpans) {
-        if (span.getAttribute('data-state') !== 'open') {
-            span.setAttribute('data-state', 'open');
-        }
-    }
-    await sleep(400);
-
-    // Real CDP Hover over the card center to trigger React's hover state
-    const rect = card.getBoundingClientRect();
-    const cx = rect.left + rect.width / 2;
-    const cy = rect.top + rect.height / 2;
-    console.log('[Flow Automator] Real CDP Hover at:', Math.round(cx), Math.round(cy));
-    await chrome.runtime.sendMessage({ type: 'humanHover', x: cx, y: cy });
-    await sleep(800); // Wait for React to render the hover-only buttons
-
-    const norm = (v) => String(v || '').toLowerCase().trim();
-
-    const findMoreBtn = () => {
-        const buttons = Array.from(card.querySelectorAll('button, [role="button"]'));
-        if (buttons.length > 0) {
-            console.log('[Flow Automator] Botoes encontrados no card:', buttons.map(b => (b.textContent || b.getAttribute('aria-label') || 'unlabeled').trim()).join(' | '));
-        }
-        
-        // 1. Look for 'more' in text or label
-        let btn = buttons.find(b => {
-            const txt = norm(b.textContent + ' ' + (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('data-tooltip') || ''));
-            const iconText = norm(b.querySelector('i')?.textContent || '');
-            return txt.includes('more') || txt.includes('mais') || iconText.includes('more') || txt.includes('opções') || txt.includes('options');
-        });
-        if (btn) return btn;
-
-        // 2. Look for any button with an icon that looks like 3 dots (vertical or horizontal)
-        btn = buttons.find(b => {
-            const icon = b.querySelector('i, svg, span[class*="icon"]');
-            if (!icon) return false;
-            const itxt = norm(icon.textContent);
-            return itxt.includes('more_') || itxt.includes('dots');
-        });
-        
-        return btn;
-    };
-
-    let moreBtn = findMoreBtn();
-    if (moreBtn) {
-        console.log('[Flow Automator] Encontrado botao de menu no card, clicando via CDP...');
-        const btnRect = moreBtn.getBoundingClientRect();
-        const bx = btnRect.left + btnRect.width / 2;
-        const by = btnRect.top + btnRect.height / 2;
-        await chrome.runtime.sendMessage({ type: 'humanClick', x: bx, y: by });
-        await sleep(1000);
-    } else {
-        console.log('[Flow Automator] Botao de menu nao encontrado apos hover, tentando clique direito...');
-        const img = card.querySelector(IMAGE_RESULT_SELECTOR) || card.querySelector('img');
-        if (img) rightClick(img);
-        await sleep(1000);
-    }
-
-    // Now look for download in the menu (portal at end of body)
-    let menuItems = document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], div[class*="menuitem"]');
-    let downloadOption = Array.from(menuItems).find(i => {
-        const text = norm(i.textContent);
-        const iTxt = norm(i.querySelector('i')?.textContent);
-        return text.includes('baixar') || text.includes('download') || iTxt.includes('download');
-    });
-
-    if (!downloadOption) {
-        removeStyle();
-        card.removeAttribute('data-flow-target-card-img');
-        return false;
-    }
-
-    // Resolucao
-    reactClick(downloadOption);
-    await sleep(800);
-
-    // Options: 1k, 2k, 4k
-    const targets = (IMAGE_DOWNLOAD_OPTIONS[resolution] || IMAGE_DOWNLOAD_OPTIONS['2k']).map(t => t.toLowerCase());
-    menuItems = document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], .sc-16c4830a-1');
-    const option = Array.from(menuItems).find(it => {
-        const txt = norm(it.textContent);
-        return targets.some(t => txt.includes(t));
-    });
-
-    if (option) {
-        reactClick(option);
-        await sleep(500);
-        removeStyle();
-        card.removeAttribute('data-flow-target-card-img');
-        return true;
-    }
-
-    // Fallback: menu-based download failed. Try direct download from image src.
-    removeStyle();
-    card.removeAttribute('data-flow-target-card-img');
-
-    const img = card.querySelector(IMAGE_RESULT_SELECTOR) || card.querySelector('img');
-    const imgSrc = (img?.getAttribute('src') || img?.src || '').trim();
-    if (imgSrc) {
-        console.log('[Flow Automator] Falling back to direct download from src:', imgSrc.substring(0, 100));
-        const absoluteUrl = imgSrc.startsWith('/') ? 'https://labs.google' + imgSrc : imgSrc;
-        chrome.runtime.sendMessage({
-            action: 'registerDownload',
-            url: absoluteUrl,
-            type: 'image'
-        });
-        await sleep(300);
-        chrome.runtime.sendMessage({ type: 'downloadUrl', url: absoluteUrl });
-        await sleep(500);
-        return true;
-    }
-
-    return false;
-}
-
-
-
-// ===== DOM Interaction Functions =====
-async function waitForPageReady() {
-    console.log('[Flow Automator] Waiting for page history to load (3s)...');
-    await sleep(3000);
-    return true;
-}
-
-// Helper: Sleep
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// Helper: Overlay (Simple version)
-function showOverlay(title, subtitle) {
-    showStatus(title, subtitle);
-}
+// ===== Floating Status UI =====
+function showOverlay(title, subtitle) { showStatus(title, subtitle); }
 function updateOverlay(title) { updateStatus(title); }
 
-
-
-// ===== Floating Status UI (bottom right corner) =====
 let statusElement = null;
 let statusStartTime = null;
 let statusTimerInterval = null;
 let statusTotalPrompts = 1;
 let statusCurrentPrompt = 1;
 
-function showOverlay(title, subtitle) {
-    showStatus(title, subtitle);
-}
 
-function updateOverlay(title) {
-    updateStatus(title);
-}
 
 function hideOverlay() {
     hideStatus();
@@ -2108,19 +1231,16 @@ function hideStatus() {
     }
 }
 
-
 // ===== Communication =====
 function sendComplete(success, mediaUrl, prompt, error) {
-    error = error || null;
     try {
         chrome.runtime.sendMessage({
             type: 'promptComplete',
             success: success,
             mediaUrl: mediaUrl,
             prompt: prompt,
-            error: error
+            error: error || null
         }, () => {
-            // Extension may reload while page stays open; ignore stale-context errors.
             if (chrome.runtime.lastError) {
                 console.warn('[Flow Automator] sendComplete ignored:', chrome.runtime.lastError.message);
             }
@@ -2130,196 +1250,5 @@ function sendComplete(success, mediaUrl, prompt, error) {
     }
 }
 
-// ===== Utilities =====
-function sleep(ms) {
-    return new Promise(function (resolve) { setTimeout(resolve, ms); });
-}
-
-function normalizeImageModelKey(modelValue) {
-    const t = String(modelValue || '').toLowerCase();
-    if (t.includes('pro')) return 'nb_pro';
-    if (t.includes('image 4') || t.includes('imagen 4') || t.includes('imagem 4')) return 'img4';
-    return 'nb2';
-}
-
-function normalizeVideoResolution(value) {
-    const t = String(value || '').toLowerCase();
-    if (t.includes('4k')) return '4k';
-    if (t.includes('1080')) return '1080p';
-    if (t.includes('270')) return '270p';
-    return '720p';
-}
-
 console.log('[Flow Automator] Ready on:', window.location.href);
 
-
-// Check automation state on load
-chrome.runtime.sendMessage({ action: 'getState' }, (response) => {
-    if (response && response.state && response.state.isProcessing && !response.state.isPaused) {
-        console.log('[Flow Automator] Automation active. Phase:', response.state.downloadPhase);
-        if (response.state.downloadPhase === 'waiting_for_edit_view' || response.state.downloadPhase === 'selecting_resolution') {
-            startAutomationResume(response.state);
-        } else if (response.state.downloadPhase === 'none') {
-            // Standard start or after returning from edit view
-            processNextPrompt();
-        }
-    }
-});
-
-async function startAutomationResume(state) {
-    createOverlay();
-    updateOverlay('Retomando download...');
-    if (window.location.href.includes('/edit/')) {
-        const success = await finishDownloadInEditView(state.targetResolution);
-        if (success) {
-            updateOverlay('Download ok! Voltando ao dashboard...');
-            await sleep(1000);
-            const backBtn = document.querySelector('button[aria-label="Voltar"], button[aria-label="Back"]');
-            if (backBtn) { reactClick(backBtn); } else { window.history.back(); }
-        }
-    } else {
-        if (state.downloadPhase === 'selecting_resolution' || state.downloadPhase === 'waiting_for_edit_view') {
-            updateOverlay('Download finalizado. Continuando automacao...');
-            chrome.runtime.sendMessage({ action: 'updatePhase', phase: 'none' });
-            handleSuccess();
-            await sleep(1000);
-            processNextPrompt();
-        }
-    }
-}
-
-async function finishDownloadInEditView(resolution) {
-    updateOverlay('Finalizando download...');
-    await sleep(3000); // Wait for page to settle
-
-    // Find Header Download button
-    const buttons = Array.from(document.querySelectorAll('button'));
-    let downloadBtn = buttons.find(b => {
-        const i = b.querySelector('i');
-        const tooltip = b.getAttribute('data-tooltip') || '';
-        const label = b.getAttribute('aria-label') || '';
-        return (i && (i.textContent.includes('download') || i.textContent.includes('file_download'))) ||
-            tooltip.toLowerCase().includes('download') ||
-            tooltip.toLowerCase().includes('baixar') ||
-            label.toLowerCase().includes('download') ||
-            label.toLowerCase().includes('baixar');
-    });
-
-    if (!downloadBtn) {
-        downloadBtn = document.querySelector('button[aria-label*="Baixar"], button[aria-label*="Download"]');
-    }
-
-    if (!downloadBtn) {
-        console.log('[Flow Automator] Header download button not found');
-        return false;
-    }
-
-    console.log('[Flow Automator] Clicking header download button');
-    reactClick(downloadBtn);
-    await sleep(2000);
-
-    const menuSelectors = ['[role="menuitem"]', '[role="menuitemradio"]', 'button[role="menuitem"]'];
-    let menuItems = [];
-    for (const sel of menuSelectors) {
-        const found = document.querySelectorAll(sel);
-        if (found.length > 0) { menuItems = Array.from(found); break; }
-    }
-
-    if (menuItems.length === 0) {
-        console.log('[Flow Automator] Resolution menu not found');
-        return false;
-    }
-
-    const targets = IMAGE_DOWNLOAD_OPTIONS[resolution] || IMAGE_DOWNLOAD_OPTIONS['2k'];
-    for (const item of menuItems) {
-        const text = item.textContent.toLowerCase();
-        if (targets.some(t => text.includes(t.toLowerCase()))) {
-            console.log('[Flow Automator] Clicking resolution:', text);
-            reactClick(item);
-
-            if (resolution === '1k') {
-                await sleep(1000);
-            }
-
-            chrome.runtime.sendMessage({ action: 'updatePhase', phase: 'none' });
-            return true;
-        }
-    }
-
-    return false;
-}
-
-async function waitForUpscaleComplete(timeoutMs = 60000) {
-    console.log('[Flow Automator] Aguardando conclusao do upscale...');
-    const baselineDownloadTs = lastFlowDownloadDetectedAt;
-    const startTime = Date.now();
-    
-    // Pequeno delay inicial
-    await sleep(800);
-
-    while (Date.now() - startTime < timeoutMs) {
-        const toasts = Array.from(document.querySelectorAll('[data-sonner-toast]'));
-        
-        // 1. Procura estritamente pelo ícone 'check_circle' (indica conclusão real)
-        const finishedToast = toasts.find(t => {
-            const icons = Array.from(t.querySelectorAll('i'));
-            return icons.some(i => (i.textContent || '').trim() === 'check_circle');
-        });
-
-        if (finishedToast) {
-            console.log('[Flow Automator] Conclusão detectada (check_circle encontrado).');
-            // Procura o botão Dismiss dentro deste toast de conclusão
-            const dismissBtn = Array.from(finishedToast.querySelectorAll('button')).find(b => {
-                const t = (b.textContent || '').toLowerCase();
-                return t.includes('dismiss') || t.includes('dispensar');
-            }) || finishedToast.querySelector('button');
-
-            if (dismissBtn) {
-                console.log('[Flow Automator] Clicando em Dismiss no toast final...');
-                reactClick(dismissBtn);
-            }
-            await sleep(1000);
-            return true;
-        }
-
-        // 2. Verifica se é apenas o toast de "Upscaling your image" (progresso)
-        const isProgress = toasts.some(t => {
-            const text = t.textContent.toLowerCase();
-            return text.includes('upscaling your image') || text.includes('aumentando sua imagem');
-        });
-
-        if (isProgress) {
-            updateOverlay('Fazendo upscale...');
-            // Não clicamos em Dismiss
-        }
-
-        // 3. Se o background já detectou o download, esperamos um pouco pelo toast de conclusão
-        if (lastFlowDownloadDetectedAt > baselineDownloadTs) {
-            console.log('[Flow Automator] Download detectado, procurando toast de conclusão para limpar...');
-            const finalCheck = Array.from(document.querySelectorAll('[data-sonner-toast]')).find(t => 
-                t.textContent.includes('check_circle') || 
-                Array.from(t.querySelectorAll('i')).some(i => i.textContent === 'check_circle')
-            );
-            
-            if (finalCheck) {
-                const btn = finalCheck.querySelector('button');
-                if (btn) reactClick(btn);
-                await sleep(500);
-            }
-            return true;
-        }
-
-        // 4. Se não há toast de progresso nem de sucesso, e já passou um tempo, prosseguimos
-        const anyUpscaleToast = toasts.some(t => t.textContent.toLowerCase().includes('upscal'));
-        if (!anyUpscaleToast && Date.now() - startTime > 15000) {
-            console.log('[Flow Automator] Nenhum toast de upscale detectado após 15s.');
-            return true;
-        }
-
-        updateOverlay('Aguardando upscale...');
-        await sleep(1000); 
-    }
-    
-    console.log('[Flow Automator] Timeout aguardando upscale.');
-    return false;
-}

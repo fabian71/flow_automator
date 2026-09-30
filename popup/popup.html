@@ -59,7 +59,7 @@
           <select id="imageModel" class="form-select">
             <option value="Nano Banana Pro">Nano Banana Pro</option>
             <option value="Nano Banana 2" selected>Nano Banana 2</option>
-            <option value="Imagen 4">Imagen 4</option>
+            <option value="Nano Banana 2 Lite">Nano Banana 2 Lite (0 creditos)</option>
           </select>
           <svg class="select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="6 9 12 15 18 9"></polyline>
@@ -78,11 +78,10 @@
         </label>
         <div class="select-wrapper" id="videoModelWrapper">
           <select id="videoModel" class="form-select" disabled>
-            <option value="Omni Flash" class="egg-option" hidden>Omni Flash</option>
-            <option value="Veo 3.1 - Lite" class="egg-option" hidden>Veo 3.1 - Lite</option>
-            <option value="Veo 3.1 - Fast" class="egg-option" hidden>Veo 3.1 - Fast</option>
-            <option value="Veo 3.1 - Quality" class="egg-option" hidden>Veo 3.1 - Quality</option>
-            <option value="Veo 3.1 - Lite [Lower Priority]" selected>Veo 3.1 - Lite [Lower Priority]</option>
+            <option value="Omni 1.1 Flash" class="egg-option" hidden>Omni 1.1 Flash (4-15 creditos)</option>
+            <option value="Veo 3.1 - Lite" selected>Veo 3.1 - Lite (10 creditos)</option>
+            <option value="Veo 3.1 - Fast" class="egg-option" hidden>Veo 3.1 - Fast (20 creditos)</option>
+            <option value="Veo 3.1 - Quality" class="egg-option" hidden>Veo 3.1 - Quality (100 creditos)</option>
           </select>
           <svg class="select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="6 9 12 15 18 9"></polyline>
@@ -97,12 +96,33 @@
             <circle cx="12" cy="12" r="10"></circle>
             <polyline points="12 6 12 12 16 14"></polyline>
           </svg>
-          Duracao do Video:
+          Duracao do Video (so Omni):
         </label>
         <div class="select-wrapper">
           <select id="videoDuration" class="form-select">
+            <option value="4s">4 Segundos</option>
             <option value="6s">6 Segundos</option>
+            <option value="8s" selected>8 Segundos</option>
             <option value="10s">10 Segundos</option>
+          </select>
+          <svg class="select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Generation quality (Omni only) -->
+      <div class="form-group" id="videoGenResolutionGroup" style="display: none;">
+        <label class="form-label">
+          <svg class="label-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+          </svg>
+          Qualidade da Geracao (so Omni):
+        </label>
+        <div class="select-wrapper">
+          <select id="videoGenResolution" class="form-select">
+            <option value="360p" selected>360p (mais barato)</option>
+            <option value="720p">720p</option>
           </select>
           <svg class="select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="6 9 12 15 18 9"></polyline>
@@ -271,13 +291,13 @@
               <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
               <path d="M8 8h8v8H8z"></path>
             </svg>
-            Resolucao do Video:
+            Download do Video:
           </label>
           <div class="select-wrapper">
             <select id="videoResolution" class="form-select">
-              <option value="270p">270p</option>
-              <option value="720p" selected>720p</option>
-              <option value="1080p">1080p</option>
+              <option value="original" selected>Tamanho original</option>
+              <option value="upscale">Aprimorada (upscale, se disponivel)</option>
+              <option value="gif">GIF animado (270p)</option>
             </select>
             <svg class="select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="6 9 12 15 18 9"></polyline>

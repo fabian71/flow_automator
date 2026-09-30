@@ -60,8 +60,21 @@ const elements = {
   imagePreviewContainer: document.getElementById('imagePreviewContainer'),
   clearImagesBtn: document.getElementById('clearImagesBtn'),
   videoDuration: document.getElementById('videoDuration'),
-  videoDurationGroup: document.getElementById('videoDurationGroup')
+  videoDurationGroup: document.getElementById('videoDurationGroup'),
+  videoGenResolution: document.getElementById('videoGenResolution'),
+  videoGenResolutionGroup: document.getElementById('videoGenResolutionGroup')
 };
+
+// Set a <select> value only if the option exists (old saved values may be gone)
+function setSelectValue(select, value, legacyMap = {}) {
+  if (!select || value === undefined || value === null || value === '') return;
+  const mapped = legacyMap[value] !== undefined ? legacyMap[value] : value;
+  if (Array.from(select.options).some(o => o.value === mapped)) select.value = mapped;
+}
+
+function isOmniSelected() {
+  return /omni/i.test(elements.videoModel?.value || '');
+}
 
 // ===== State =====
 let isProcessing = false;
@@ -149,7 +162,10 @@ function updateModeVisibility() {
   }
 
   if (elements.videoDurationGroup) {
-    elements.videoDurationGroup.style.display = isVideo ? 'block' : 'none';
+    elements.videoDurationGroup.style.display = (isVideo && isOmniSelected()) ? 'block' : 'none';
+  }
+  if (elements.videoGenResolutionGroup) {
+    elements.videoGenResolutionGroup.style.display = (isVideo && isOmniSelected()) ? 'block' : 'none';
   }
 
   if (elements.videoModelGroup) {
@@ -230,7 +246,8 @@ function setupEventListeners() {
     updatePromptCount();
     saveSettings();
   });
-  // Remove prompts
+
+  // Remove prompts
   elements.removePromptsBtn.addEventListener('click', () => {
     const countToRemove = parseInt(elements.removeCount.value) || 0;
     if (countToRemove <= 0) return;
@@ -257,6 +274,12 @@ function setupEventListeners() {
     updateModeVisibility();
     saveSettings();
   });
+  if (elements.videoModel) {
+    elements.videoModel.addEventListener('change', () => { updateModeVisibility(); saveSettings(); });
+  }
+  if (elements.videoGenResolution) {
+    elements.videoGenResolution.addEventListener('change', () => saveSettings());
+  }
 
   // Randomize aspect ratio toggle
   elements.randomizeAspectRatio.addEventListener('change', () => {
@@ -329,14 +352,6 @@ function setupEventListeners() {
           // Enable the select
           sel.disabled = false;
           if (wrapper) wrapper.style.opacity = '1';
-        }
-        // Add 4K to video resolution select if not already present
-        const resSel = elements.videoResolution;
-        if (resSel && !Array.from(resSel.options).some(o => o.value === '4k')) {
-          const opt = document.createElement('option');
-          opt.value = '4k';
-          opt.textContent = '4K';
-          resSel.appendChild(opt);
         }
         // Add 4K to image resolution select if not already present
         const imgResSel = elements.imageResolution;
@@ -650,6 +665,7 @@ async function loadSettings() {
     'pauseMinMinutes',
     'pauseMaxMinutes',
     'videoDuration',
+    'videoGenResolution',
     'videoModelUnlocked'
   ]);
 
@@ -698,14 +714,6 @@ async function loadSettings() {
     elements.videoModel.querySelectorAll('.egg-option').forEach(o => o.hidden = false);
     elements.videoModel.disabled = false;
     if (elements.videoModelWrapper) elements.videoModelWrapper.style.opacity = '1';
-    // Add 4K to video resolution if not present
-    const resSel = elements.videoResolution;
-    if (resSel && !Array.from(resSel.options).some(o => o.value === '4k')) {
-      const opt = document.createElement('option');
-      opt.value = '4k';
-      opt.textContent = '4K';
-      resSel.appendChild(opt);
-    }
     // Add 4K to image resolution if not present
     const imgResSel = elements.imageResolution;
     if (imgResSel && !Array.from(imgResSel.options).some(o => o.value === '4k')) {
@@ -716,13 +724,21 @@ async function loadSettings() {
     }
   }
 
-  if (settings.imageModel) elements.imageModel.value = settings.imageModel;
-  if (settings.videoModel) elements.videoModel.value = settings.videoModel;
-  if (settings.imageResolution) elements.imageResolution.value = settings.imageResolution; 
-  if (settings.videoResolution) elements.videoResolution.value = settings.videoResolution;
+  setSelectValue(elements.imageModel, settings.imageModel, { 'Imagen 4': 'Nano Banana 2' });
+  setSelectValue(elements.videoModel, settings.videoModel, {
+    'Veo 3.1 - Lite [Lower Priority]': 'Veo 3.1 - Lite',
+    'Omni Flash': 'Omni 1.1 Flash'
+  });
+  // Locked select must never show a hidden option
+  if (elements.videoModel.selectedOptions[0]?.hidden) elements.videoModel.value = 'Veo 3.1 - Lite';
+  setSelectValue(elements.imageResolution, settings.imageResolution);
+  setSelectValue(elements.videoResolution, settings.videoResolution, {
+    '270p': 'gif', '720p': 'original', '1080p': 'upscale', '4k': 'upscale'
+  });
+  setSelectValue(elements.videoGenResolution, settings.videoGenResolution);
   if (settings.generationTimeout) elements.generationTimeout.value = settings.generationTimeout;
   if (settings.maxRetries) elements.maxRetries.value = settings.maxRetries;
-  if (settings.videoDuration) elements.videoDuration.value = settings.videoDuration;
+  setSelectValue(elements.videoDuration, settings.videoDuration);
 
   // Randomization settings
   if (settings.randomizeAspectRatio !== undefined) {
@@ -790,7 +806,8 @@ async function saveSettings() {
     pauseEveryN: parseInt(elements.pauseEveryN.value) || 3,
     pauseMinMinutes: parseInt(elements.pauseMinMinutes.value) || 1,
     pauseMaxMinutes: parseInt(elements.pauseMaxMinutes.value) || 6,
-    videoDuration: elements.videoDuration.value
+    videoDuration: elements.videoDuration.value,
+    videoGenResolution: elements.videoGenResolution ? elements.videoGenResolution.value : '360p'
   });
 }
 
@@ -948,7 +965,8 @@ async function startAutomation() {
       pauseEveryN: parseInt(elements.pauseEveryN.value) || 3,
       pauseMinMinutes: parseInt(elements.pauseMinMinutes.value) || 1,
       pauseMaxMinutes: parseInt(elements.pauseMaxMinutes.value) || 6,
-      videoDuration: elements.videoDuration.value
+      videoDuration: elements.videoDuration.value,
+      videoGenResolution: elements.videoGenResolution ? elements.videoGenResolution.value : '360p'
     }
   });
 }
@@ -991,6 +1009,7 @@ function setInputsDisabled(disabled) {
   elements.delaySeconds.disabled = disabled;
   elements.aspectRatio.disabled = disabled;
   elements.videoDuration.disabled = disabled;
+  if (elements.videoGenResolution) elements.videoGenResolution.disabled = disabled;
   if (elements.videoResolution) elements.videoResolution.disabled = disabled;
   if (elements.videoModel) {
     if (disabled) {

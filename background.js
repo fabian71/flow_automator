@@ -1,3 +1,4 @@
+const FLOW_ORIGIN_FALLBACK = 'https://flow.google.com';
 // ===== State =====
 let automationState = {
     isProcessing: false,
@@ -75,11 +76,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true;
     }
 
-    // Handle main-world text injection for Lexical editors
-    if (message.action === 'mainWorldFillText') {
+    // Upload a file through the page's own file input (MAIN world, picker intercepted)
+    if (message.action === 'mainWorldUploadFile') {
         const tabId = sender.tab?.id;
         if (!tabId) { sendResponse({ success: false, error: 'No tab' }); return true; }
-        mainWorldFillText(tabId, message.text).then(result => sendResponse(result));
+        mainWorldUploadFile(tabId, message.dataUrl, message.fileName, message.fileType).then(result => sendResponse(result));
         return true;
     }
 
@@ -88,6 +89,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const tabId = sender.tab?.id;
         if (!tabId) { sendResponse({ success: false, error: 'No tab' }); return true; }
         mainWorldCdpHover(tabId, message.x, message.y).then(result => sendResponse(result));
+        return true;
+    }
+    if (message.type === 'humanClickElement') {
+        const tabId = sender.tab?.id;
+        if (!tabId) { sendResponse({ success: false, error: 'No tab' }); return true; }
+        cdpClickMarkedElement(tabId, message.token).then(result => sendResponse(result));
         return true;
     }
     if (message.type === 'humanClick') {
@@ -105,13 +112,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true;
     }
 
-    // Handle main-world settings selection (mode, ratio, model, quantity)
-    if (message.action === 'mainWorldSelectSettings') {
-        const tabId = sender.tab?.id;
-        if (!tabId) { sendResponse({ success: false, error: 'No tab' }); return true; }
-        mainWorldSelectSettings(tabId, message.config).then(result => sendResponse(result));
-        return true;
-    }
 
     // Handle getState for resuming automation after navigation
     if (message.action === 'getState') {
@@ -196,6 +196,42 @@ async function mainWorldReactClick(tabId, xpath) {
     }
 }
 
+// Trusted click on an element marked with data-fa-click="<token>".
+// Coordinates are measured AFTER attaching the debugger, because Chrome's
+// "is debugging this browser" bar resizes the viewport and moves the page.
+async function cdpClickMarkedElement(tabId, token) {
+    const target = { tabId };
+    let attached = false;
+    try {
+        await chrome.debugger.attach(target, '1.3');
+        attached = true;
+        await sleep(350);
+        const expr = `(() => {
+            const e = document.querySelector('[data-fa-click="${String(token).replace(/[^a-z0-9_-]/gi, '')}"]');
+            if (!e) return null;
+            e.scrollIntoView({ block: 'center', inline: 'center' });
+            const r = e.getBoundingClientRect();
+            return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height };
+        })()`;
+        const ev = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', { expression: expr, returnByValue: true });
+        const pos = ev?.result?.value;
+        if (!pos || !pos.w) throw new Error('element-not-found');
+        const base = { x: pos.x, y: pos.y, button: 'left', clickCount: 1, pointerType: 'mouse' };
+        await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: pos.x, y: pos.y });
+        await sleep(60);
+        await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', { ...base, type: 'mousePressed' });
+        await sleep(60);
+        await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', { ...base, type: 'mouseReleased' });
+        await sleep(150);
+        return { success: true, method: 'cdp-element-click', x: pos.x, y: pos.y };
+    } catch (e) {
+        console.warn('[BG] CDP element click failed:', e.message);
+        return { success: false, error: e.message };
+    } finally {
+        if (attached) { try { await chrome.debugger.detach(target); } catch (_) { } }
+    }
+}
+
 async function mainWorldCdpClick(tabId, x, y) {
     const target = { tabId };
     try {
@@ -233,190 +269,70 @@ async function mainWorldCdpHover(tabId, x, y) {
     }
 }
 
-// ===== Main World Text Injection (Slate native API via React Fiber) =====
-// Adapted from the working reference extension. Accesses Slate's internal
-// editor object through React Fiber to call insertText() directly.
-// This fires Slate's own onChange listeners, which Flow uses to enable the submit button.
-async function mainWorldFillText(tabId, text) {
-    const target = { tabId };
+// ===== Main World File Upload =====
+// Flow opens a native file picker from its "Enviar midia"/"Upload media" button.
+// We intercept HTMLInputElement.click (and showOpenFilePicker) in the page, grab the
+// <input type=file>, fill it with our file and fire 'change' - no OS dialog appears.
+async function mainWorldUploadFile(tabId, dataUrl, fileName, fileType) {
     try {
-        const result = await chrome.scripting.executeScript({
-            target,
+        const results = await chrome.scripting.executeScript({
+            target: { tabId },
             world: 'MAIN',
-            args: [text],
-            func: (value) => {
-                // --- Helper: find best prompt editor (scores by size/visibility) ---
-                function findBestEditor() {
-                    const visible = (el) => {
-                        if (!el || !el.isConnected) return false;
-                        const s = window.getComputedStyle(el);
-                        if (!s || s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
-                        const r = el.getBoundingClientRect();
-                        return r.width > 4 && r.height > 4;
+            args: [dataUrl, fileName || 'frame.png', fileType || 'image/png'],
+            func: async (dataUrl, fileName, fileType) => {
+                const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+                const iconOf = (el) => String(el?.querySelector('mat-icon, .google-symbols, i')?.textContent || '').trim();
+                const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 2 && r.height > 2; };
+                const root = document.querySelector('.cdk-overlay-container') || document;
+                const btn = Array.from(root.querySelectorAll('button')).filter(visible).find(b => iconOf(b) === 'upload');
+                if (!btn) return { success: false, error: 'upload-button-not-found' };
+
+                const blob = await (await fetch(dataUrl)).blob();
+                const file = new File([blob], fileName, { type: fileType || blob.type || 'image/png' });
+
+                let captured = null;
+                const origClick = HTMLInputElement.prototype.click;
+                const origShowPicker = HTMLInputElement.prototype.showPicker;
+                const origOpenPicker = window.showOpenFilePicker;
+                HTMLInputElement.prototype.click = function () {
+                    if (this.type === 'file') { captured = this; return; }
+                    return origClick.call(this);
+                };
+                if (origShowPicker) {
+                    HTMLInputElement.prototype.showPicker = function () {
+                        if (this.type === 'file') { captured = this; return; }
+                        return origShowPicker.call(this);
                     };
-                    const candidates = Array.from(document.querySelectorAll(
-                        "textarea, [role='textbox'], [contenteditable='true'], [contenteditable='plaintext-only'], [data-slate-editor='true']"
-                    ))
-                        .filter(el => visible(el) && !el.disabled && !el.readOnly)
-                        .filter(el => {
-                            const label = [el.getAttribute('type'), el.getAttribute('aria-label'), el.getAttribute('placeholder'),
-                                el.getAttribute('name'), el.id, el.className
-                            ].map(v => String(v || '')).join(' ').toLowerCase();
-                            return !/\bsearch\b/.test(label);
-                        })
-                        .map(el => {
-                            const r = el.getBoundingClientRect();
-                            const tag = String(el.tagName || '').toLowerCase();
-                            return { el, score: r.width * r.height + r.bottom + (tag === 'textarea' ? 5000 : 0) };
-                        })
-                        .sort((a, b) => b.score - a.score);
-                    return candidates[0]?.el || null;
                 }
-
-                // --- Helper: find Slate editor object via React Fiber ---
-                function findSlateEditorObject(root) {
-                    const slateRoot = root?.matches?.("[data-slate-editor='true']")
-                        ? root
-                        : root?.closest?.("[data-slate-editor='true']");
-                    if (!slateRoot) return null;
-                    for (const key of Object.keys(slateRoot).filter((k) => k.startsWith('__react'))) {
-                        const stack = [slateRoot[key]];
-                        const seen = new Set();
-                        let guard = 0;
-                        while (stack.length && guard < 4000) {
-                            guard++;
-                            const node = stack.pop();
-                            if (!node || typeof node !== 'object' || seen.has(node)) continue;
-                            seen.add(node);
-                            const candidates = [
-                                node.memoizedProps?.editor,
-                                node.memoizedProps?.node,
-                                node.memoizedState?.editor,
-                                node.pendingProps?.editor,
-                                node.stateNode?.editor,
-                                node.editor
-                            ];
-                            const editor = candidates.find((c) =>
-                                c && typeof c === 'object' &&
-                                Array.isArray(c.children) &&
-                                (typeof c.insertText === 'function' || typeof c.apply === 'function')
-                            );
-                            if (editor) return editor;
-                            if (node.child) stack.push(node.child);
-                            if (node.sibling) stack.push(node.sibling);
-                            if (node.return) stack.push(node.return);
-                            if (node.alternate) stack.push(node.alternate);
-                        }
-                    }
-                    return null;
+                if (origOpenPicker) {
+                    window.showOpenFilePicker = async () => { throw new DOMException('intercepted', 'AbortError'); };
                 }
-
-                // --- Helper: collect text from Slate node tree ---
-                function collectSlateText(node, out = []) {
-                    if (!node || typeof node !== 'object') return out;
-                    if (typeof node.text === 'string') out.push(node.text);
-                    if (Array.isArray(node.children)) node.children.forEach((c) => collectSlateText(c, out));
-                    return out;
-                }
-
-                // --- Helper: mark React receivedUserInput ref ---
-                function markReceivedUserInput(el) {
-                    const fiberKey = Object.keys(el).find((k) => k.startsWith('__reactFiber'));
-                    if (!fiberKey) return;
-                    for (let fiber = el[fiberKey], depth = 0; fiber && depth < 50; depth++, fiber = fiber.return) {
-                        const ref = fiber.memoizedProps?.receivedUserInput;
-                        if (ref && typeof ref === 'object' && 'current' in ref) ref.current = true;
-                    }
-                }
-
-                // --- Helper: sync Flow's internal Zustand store ---
-                function syncPromptStore(editorEl, text) {
-                    const fiberKey = Object.keys(editorEl).find((k) => k.startsWith('__reactFiber'));
-                    if (!fiberKey) return false;
-                    for (let fiber = editorEl[fiberKey], depth = 0; fiber && depth < 50; depth++, fiber = fiber.return) {
-                        const store = fiber.memoizedProps?.promptBoxStore;
-                        const setPrompt = store?.getState?.()?.actions?.setPrompt;
-                        if (typeof setPrompt === 'function') {
-                            setPrompt(String(text || ''));
-                            return true;
-                        }
-                    }
-                    return false;
-                }
-
-                // 1. Find editor element (smart: sizes, visibility, filters search inputs)
-                const el = findBestEditor();
-                if (!el) return { success: false, error: 'editor_not_found' };
-
-                // 2. Scroll + focus
-                el.scrollIntoView({ block: 'center' });
-                el.focus();
-
-                // 3. Get Slate editor object
-                const slateEditor = findSlateEditorObject(el);
-                if (slateEditor) {
-                    try {
-                        // Clear existing text via Slate API
-                        const existingText = String(slateEditor?.children?.[0]?.children?.[0]?.text || '');
-                        const range = { anchor: { path: [0, 0], offset: 0 }, focus: { path: [0, 0], offset: existingText.length } };
-                        if (typeof slateEditor.select === 'function') slateEditor.select(range);
-                        if (typeof slateEditor.deleteFragment === 'function') slateEditor.deleteFragment();
-
-                        // Insert text via Slate's native API (fires onChange, enables submit button)
-                        if (typeof slateEditor.insertText === 'function') {
-                            slateEditor.insertText(value);
-                        } else if (typeof slateEditor.apply === 'function') {
-                            slateEditor.apply({ type: 'insert_text', path: [0, 0], offset: 0, text: value });
-                        }
-                        if (typeof slateEditor.onChange === 'function') slateEditor.onChange();
-
-                        // Mark user interaction
-                        markReceivedUserInput(el);
-
-                        // Sync Flow's internal Zustand store as extra safety
-                        syncPromptStore(el, value);
-
-                        // Notify React
-                        el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertReplacementText', data: null }));
-                        el.dispatchEvent(new Event('change', { bubbles: true }));
-                        try {
-                            el.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', code: 'Space', keyCode: 32, which: 32, bubbles: true, cancelable: true, composed: true }));
-                        } catch (_) {}
-
-                        const persisted = collectSlateText(slateEditor.children?.[0] || {}, []).join('');
-                        return { success: true, method: 'slate.insertText', length: persisted.length };
-                    } catch (e) {
-                        return { success: false, error: 'slate_insert_failed: ' + e.message };
-                    }
-                }
-
-                // Fallback: execCommand (legacy)
                 try {
-                    el.focus();
-                    document.execCommand('selectAll', false, null);
-                    document.execCommand('insertText', false, value);
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                    return { success: true, method: 'execCommand.insertText', length: value.length };
-                } catch (e) {
-                    return { success: false, error: 'execCommand_failed: ' + e.message };
+                    btn.click();
+                    for (let i = 0; i < 30 && !captured; i++) await sleep(100);
+                } finally {
+                    HTMLInputElement.prototype.click = origClick;
+                    if (origShowPicker) HTMLInputElement.prototype.showPicker = origShowPicker;
+                    if (origOpenPicker) window.showOpenFilePicker = origOpenPicker;
                 }
+                if (!captured) {
+                    captured = Array.from(document.querySelectorAll('input[type="file"]')).pop() || null;
+                }
+                if (!captured) return { success: false, error: 'file-input-not-captured' };
+
+                const dt = new DataTransfer();
+                dt.items.add(file);
+                captured.files = dt.files;
+                captured.dispatchEvent(new Event('input', { bubbles: true }));
+                captured.dispatchEvent(new Event('change', { bubbles: true }));
+                return { success: true, size: file.size };
             }
         });
-
-        const r = result[0]?.result;
-        console.log('[BG] mainWorldFillText result:', JSON.stringify(r));
-        return r || { success: false, error: 'no_result' };
+        return results?.[0]?.result || { success: false, error: 'no-result' };
     } catch (e) {
-        console.error('[BG] mainWorldFillText error:', e.message);
         return { success: false, error: e.message };
     }
 }
-
-
-
-
-
 
 // Simulates Enter key on the editor using CDP (indistinguishable from real keyboard)
 async function mainWorldPressEnter(tabId) {
@@ -427,9 +343,9 @@ async function mainWorldPressEnter(tabId) {
             target,
             world: 'MAIN',
             func: () => {
-                const el = document.querySelector('[data-slate-editor="true"]') ||
-                    document.querySelector('[role="textbox"][contenteditable="true"]') ||
-                    document.querySelector('[role="textbox"]');
+                const el = document.querySelector('.base-prompt-box .ProseMirror') ||
+                    document.querySelector('.ProseMirror[contenteditable="true"]') ||
+                    document.querySelector('[role="textbox"][contenteditable="true"]');
                 if (el) {
                     el.focus();
                     // Scroll to it too
@@ -464,9 +380,9 @@ async function mainWorldPressEnter(tabId) {
                 target,
                 world: 'MAIN',
                 func: () => {
-                    const el = document.querySelector('[data-slate-editor="true"]') ||
-                        document.querySelector('[role="textbox"][contenteditable="true"]') ||
-                        document.querySelector('[role="textbox"]');
+                    const el = document.querySelector('.base-prompt-box .ProseMirror') ||
+                        document.querySelector('.ProseMirror[contenteditable="true"]') ||
+                        document.querySelector('[role="textbox"][contenteditable="true"]');
                     if (!el) return false;
                     el.focus();
                     const common = { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 };
@@ -480,319 +396,6 @@ async function mainWorldPressEnter(tabId) {
         } catch (e2) {
             return { success: false, error: e2.message };
         }
-    }
-}
-
-
-// ===== Main World Settings Selection =====
-// Uses simple .click() - confirmed working by browser testing.
-// The working reference extension (lhcmnhdbddgagibbbgppakocflbnknoa) also uses only .click()
-// Config: { mode: 'create-image'|'text-to-video'|'image-to-video',
-//           imageModel: 'Nano Banana 2'|'Nano Banana Pro'|'Imagen 4',
-//           aspectRatio: '16:9'|'4:3'|'1:1'|'3:4'|'9:16'|'landscape'|'portrait' }
-async function mainWorldSelectSettings(tabId, config) {
-    try {
-        const results = await chrome.scripting.executeScript({
-            target: { tabId },
-            world: 'MAIN',
-            func: (cfg) => {
-                const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-                const log = (...a) => console.log('[Flow Automator]', ...a);
-
-                function byXPath(xpath, root = document) {
-                    return document.evaluate(xpath, root, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-                }
-
-                function isVisible(el) {
-                    if (!el || !el.isConnected) return false;
-                    const style = window.getComputedStyle(el);
-                    if (!style || style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-                    const r = el.getBoundingClientRect();
-                    return r.width > 4 && r.height > 4;
-                }
-
-                function normText(v) {
-                    return String(v || '')
-                        .toLowerCase()
-                        .normalize('NFD')
-                        .replace(/[\u0300-\u036f]/g, '')
-                        .replace(/\s+/g, ' ')
-                        .trim();
-                }
-
-                function pressEscape() {
-                    document.body.dispatchEvent(new KeyboardEvent('keydown', {
-                        key: 'Escape',
-                        keyCode: 27,
-                        bubbles: true,
-                        cancelable: true,
-                        composed: true
-                    }));
-                }
-
-                function humanClick(el) {
-                    if (!el) return false;
-                    try {
-                        const rect = el.getBoundingClientRect();
-                        const x = rect.left + Math.max(6, Math.min(rect.width - 6, rect.width * 0.5));
-                        const y = rect.top + Math.max(6, Math.min(rect.height - 6, rect.height * 0.5));
-                        const common = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
-                        try { el.dispatchEvent(new PointerEvent('pointerover', common)); } catch (_) { }
-                        try { el.dispatchEvent(new PointerEvent('pointermove', common)); } catch (_) { }
-                        try { el.dispatchEvent(new PointerEvent('pointerdown', common)); } catch (_) { }
-                        el.dispatchEvent(new MouseEvent('mousedown', common));
-                        try { el.dispatchEvent(new PointerEvent('pointerup', common)); } catch (_) { }
-                        el.dispatchEvent(new MouseEvent('mouseup', common));
-                        el.dispatchEvent(new MouseEvent('click', common));
-                        return true;
-                    } catch (_) {
-                        try { el.click(); return true; } catch (e) { return false; }
-                    }
-                }
-
-                async function waitFor(fn, timeoutMs = 5000, stepMs = 100) {
-                    const max = Math.max(1, Math.ceil(timeoutMs / stepMs));
-                    for (let i = 0; i < max; i++) {
-                        const v = fn();
-                        if (v) return v;
-                        await sleep(stepMs);
-                    }
-                    return null;
-                }
-
-                    function normalizeAspectRatio(value) {
-                        const raw = String(value || '').trim();
-                        if (raw === 'portrait') return '9:16';
-                        if (raw === 'landscape') return '16:9';
-                        return raw || '16:9';
-                    }
-
-                    function findSettingsMenu() {
-                        const menus = Array.from(document.querySelectorAll("[role='menu'], [role='dialog'], .DropdownMenuContent")).filter(isVisible);
-                        return menus.find(m => {
-                            const t = normText(m.textContent);
-                            return t.includes('image') || t.includes('video') || t.includes('paisagem') || t.includes('retrato') || t.includes('portrait') || t.includes('landscape') || t.includes('square') || t.includes('quadrado') || t.includes('16:9') || t.includes('4:3') || t.includes('1:1') || t.includes('3:4') || t.includes('9:16') || t.includes('x1');
-                        }) || null;
-                    }
-
-                return (async () => {
-                    const steps = [];
-                    try {
-                        // 1) Close previous popovers.
-                        pressEscape();
-                        await sleep(250);
-
-                        // 2) Open settings panel.
-                        // In the new UI, the settings trigger is often the same as the model dropdown button (has aria-haspopup="menu")
-                        const trigger = await waitFor(
-                            () => byXPath("//button[descendant::i[normalize-space(text())='crop_16_9' or normalize-space(text())='crop_landscape' or normalize-space(text())='crop_square' or normalize-space(text())='crop_portrait' or normalize-space(text())='crop_9_16']]"),
-                            6000,
-                            120
-                        );
-                        if (!trigger) return { success: false, error: 'settings-trigger-not-found', steps };
-                        humanClick(trigger);
-                        await sleep(700);
-
-                        // 3) Get settings menu.
-                        const menu = await waitFor(() => findSettingsMenu(), 6000, 120);
-                        if (!menu) return { success: false, error: 'settings-menu-not-opened', steps };
-
-                        const isImage = cfg.mode === 'create-image';
-                        const wantRatio = normalizeAspectRatio(cfg.aspectRatio);
-                        const wantModel = isImage
-                            ? normText(cfg.imageModel || 'nano banana 2')
-                            : normText(cfg.videoModel || 'veo 3.1 - lite [lower priority]');
-
-                        // 4) Mode
-                        const modeTab =
-                            (isImage
-                                ? menu.querySelector("button[role='tab'][id$='trigger-IMAGE']")
-                                : menu.querySelector("button[role='tab'][id$='trigger-VIDEO']")) ||
-                            Array.from(menu.querySelectorAll("button[role='tab']")).find(b => {
-                                const t = normText(b.textContent);
-                                return isImage ? (t === 'image' || t.includes('imagem')) : t.includes('video');
-                            });
-                        if (!modeTab) return { success: false, error: 'mode-tab-not-found', steps };
-                        humanClick(modeTab);
-                        await sleep(350);
-                        steps.push('mode:' + (isImage ? 'image' : 'video'));
-
-                        // 5) Aspect ratio
-                        const ratioIdSuffixByValue = {
-                            '16:9': 'LANDSCAPE',
-                            '4:3': 'LANDSCAPE_4_3',
-                            '1:1': 'SQUARE',
-                            '3:4': 'PORTRAIT_3_4',
-                            '9:16': 'PORTRAIT'
-                        };
-                        const ratioLabelsByValue = {
-                            '16:9': ['paisagem', 'landscape', '16:9'],
-                            '4:3': ['4:3'],
-                            '1:1': ['quadrado', 'square', '1:1'],
-                            '3:4': ['3:4'],
-                            '9:16': ['retrato', 'portrait', '9:16']
-                        };
-                        const ratioTab =
-                            menu.querySelector(`button[role='tab'][id$='trigger-${ratioIdSuffixByValue[wantRatio] || 'LANDSCAPE'}']`) ||
-                            Array.from(menu.querySelectorAll("button[role='tab']")).find(b => {
-                                const t = normText(b.textContent);
-                                return (ratioLabelsByValue[wantRatio] || ratioLabelsByValue['16:9']).some(label => t.includes(label));
-                            });
-                        if (!ratioTab) return { success: false, error: 'ratio-tab-not-found', steps };
-                        humanClick(ratioTab);
-                        await sleep(320);
-                        steps.push('ratio:' + wantRatio);
-
-                        // 6) Quantity x1
-                        const qtyTab =
-                            menu.querySelector("button[role='tab'][id$='trigger-1']") ||
-                            Array.from(menu.querySelectorAll("button[role='tab']")).find(b => normText(b.textContent) === 'x1');
-                        if (!qtyTab) return { success: false, error: 'qty-x1-tab-not-found', steps };
-                        humanClick(qtyTab);
-                        await sleep(280);
-                        steps.push('qty:x1');
-
-                        // 7) Model Selection (Unified Image/Video)
-                        if (true) {
-                            const menusBefore = Array.from(document.querySelectorAll("[role='menu']")).filter(isVisible);
-
-                            // Image-specific mapping logic (keep existing user pattern)
-                            let wantedModelKey = '';
-                            let wantedUiModel = wantModel;
-
-                            if (isImage) {
-                                wantedModelKey = String(cfg.modelKey || '').trim() ||
-                                    (wantModel.includes('pro') ? 'nb_pro' :
-                                        ((wantModel.includes('imagen') || wantModel.includes('image 4') || wantModel.includes('imagem 4')) ? 'img4' : 'nb2'));
-
-                                wantedUiModel = wantedModelKey === 'nb_pro' ? 'nano banana pro' : (wantedModelKey === 'img4' ? 'image 4' : 'nano banana 2');
-                            }
-
-                            const isModelButton = (b) => {
-                                if (!isVisible(b)) return false;
-                                const t = normText(b.textContent);
-                                const hasArrow = Array.from(b.querySelectorAll('i')).some(i => normText(i.textContent) === 'arrow_drop_down');
-                                const kws = isImage
-                                    ? ['nano banana', 'imagen', 'image 4', 'imagem 4']
-                                    : ['omni', 'flash', 'veo', 'fast', 'quality', 'video'];
-                                return hasArrow && (kws.some(k => t.includes(k)) || b.id.includes('radix'));
-                            };
-
-                            let modelDrop = Array.from(menu.querySelectorAll("button,[role='combobox']")).find(isModelButton) ||
-                                byXPath("//button[.//i[normalize-space(text())='arrow_drop_down'] and (contains(.,'Nano Banana') or contains(.,'Imagen') or contains(.,'Image 4') or contains(.,'Veo') or contains(.,'Omni') or contains(.,'Flash'))]");
-
-                            if (!modelDrop) return { success: false, error: 'model-dropdown-not-found', steps };
-                            log('Opening model dropdown:', modelDrop.textContent.trim());
-                            humanClick(modelDrop);
-                            await sleep(600);
-
-                            const modelMenu = await waitFor(() => {
-                                const menus = Array.from(document.querySelectorAll("[role='menu'], .DropdownMenuContent")).filter(isVisible);
-                                return menus.find(m => {
-                                    if (menusBefore.includes(m)) return false;
-                                    const t = normText(m.textContent);
-                                    const kws = isImage ? ['nano banana', 'imagen', 'image 4'] : ['omni', 'flash', 'veo', 'fast', 'quality'];
-                                    return kws.some(k => t.includes(k));
-                                });
-                            }, 5000, 150);
-
-                            if (!modelMenu) return { success: false, error: 'model-menu-not-found', steps };
-
-                            let items = Array.from(modelMenu.querySelectorAll("[role='menuitem'], [role='menuitemradio'], [role='option'], button"));
-
-                            const scoreItem = (itemEl, modelToMatch) => {
-                                const t = normText(itemEl.textContent);
-                                if (!t) return -1;
-
-                                if (isImage) {
-                                    const hasNb = t.includes('nano banana');
-                                    const hasPro = t.includes('pro');
-                                    const hasImg4 = t.includes('image 4') || t.includes('imagen 4');
-                                    if (wantedModelKey === 'nb_pro') return (hasNb && hasPro) ? 100 : (hasNb ? 50 : 0);
-                                    if (wantedModelKey === 'nb2') return (hasNb && !hasPro) ? 100 : (hasNb ? 40 : 0);
-                                    if (hasImg4) return 100;
-                                    return 0;
-                                } else {
-                                    // Video logic: fuzzy matching
-                                    const target = modelToMatch || wantModel;
-                                    if (t === target) return 100;
-                                    if (t.includes(target) || target.includes(t)) return 80;
-                                    // Split and match parts (e.g., "veo 2" and "fast")
-                                    const parts = target.split(/[\s-]+/).filter(p => p !== 'lower' && p !== 'priority' && !p.includes('[') && !p.includes(']'));
-                                    const matches = parts.filter(p => p.length > 1 && t.includes(p)).length;
-                                    return matches * 20;
-                                }
-                            };
-
-                            let bestItem = null;
-                            let bestScore = -1;
-                            for (const item of items) {
-                                const s = scoreItem(item, wantModel);
-                                if (s > bestScore) {
-                                    bestScore = s;
-                                    bestItem = item;
-                                }
-                            }
-
-                            // Fallback: se for 'lower priority' e não encontrou item com score bom, tenta sem o suffix
-                            if ((!bestItem || bestScore <= 0) && !isImage && wantModel.includes('[lower priority]')) {
-                                const fallbackModel = wantModel.replace(/\s*\[lower priority\]/i, '').trim();
-                                log('Modelo [Lower Priority] nao encontrado, tentando fallback:', fallbackModel);
-                                bestItem = null;
-                                bestScore = -1;
-                                for (const item of items) {
-                                    const s = scoreItem(item, fallbackModel);
-                                    if (s > bestScore) { bestScore = s; bestItem = item; }
-                                }
-                            }
-
-                            if (!bestItem || bestScore <= 0) {
-                                return { success: false, error: 'model-target-not-found', wantModel, available: items.slice(0, 5).map(i => i.textContent.trim()) };
-                            }
-
-                            log('Clicking model:', bestItem.textContent.trim(), 'score:', bestScore);
-                            humanClick(bestItem);
-                            await sleep(500);
-
-                            // Verification Logic
-                            const verified = await waitFor(() => {
-                                const currentText = normText(modelDrop.textContent);
-                                if (isImage) {
-                                    if (wantedUiModel === 'nano banana pro') return currentText.includes('nano banana pro');
-                                    if (wantedUiModel === 'nano banana 2') return currentText.includes('nano banana') && !currentText.includes('pro');
-                                    return currentText.includes('image 4') || currentText.includes('imagen 4');
-                                } else {
-                                    // For video, exact or partial match on the trigger button text
-                                    return currentText.includes(wantModel) || wantModel.includes(currentText) || currentText.includes('veo');
-                                }
-                            }, 4000, 200);
-
-                            if (!verified) log('Warning: Model selection could not be verified, but continuing...');
-
-                            steps.push('model:' + wantModel);
-                        }
-
-                        // 8) Close panel
-                        pressEscape();
-                        await sleep(300);
-                        steps.push('done');
-                        return { success: true, steps };
-                    } catch (e) {
-                        log('Error in selectSettings:', e.message);
-                        try { pressEscape(); } catch (_) { }
-                        return { success: false, error: e?.message || String(e), steps };
-                    }
-                })();
-            },
-            args: [config]
-        });
-
-        const result = results?.[0]?.result;
-        console.log('[BG] mainWorldSelectSettings result:', JSON.stringify(result));
-        return { success: result?.success ?? false, result };
-    } catch (e) {
-        console.error('[BG] mainWorldSelectSettings error:', e.message);
-        return { success: false, error: e.message };
     }
 }
 
@@ -820,7 +423,7 @@ function registerPendingDownload(url, type) {
     let mediaId = '';
     if (isFlowRedirect) {
         try {
-            const parsed = new URL(url, 'https://labs.google');
+            const parsed = new URL(url, FLOW_ORIGIN_FALLBACK);
             const name = parsed.searchParams.get('name');
             if (name) mediaId = name;
         } catch (_) { }
@@ -850,10 +453,11 @@ function cleanupDownloadQueue() {
     }
 }
 
-const FLOW_HOME_URL = 'https://labs.google/fx/tools/flow';
+const FLOW_HOME_URL = 'https://flow.google.com/';
 
 function isFlowToolsUrl(url) {
     const u = String(url || '').toLowerCase();
+    if (u.startsWith('https://flow.google.com')) return true;
     return u.includes('labs.google/fx') && u.includes('/tools/flow');
 }
 
@@ -915,10 +519,12 @@ async function clickNewProjectButton(tabId) {
             };
 
             const buttons = Array.from(document.querySelectorAll('button')).filter(isVisible);
-            const byIcon = buttons.find(btn => {
-                const icon = String(btn.querySelector('i')?.textContent || '').trim().toLowerCase();
-                return icon === 'add_2';
-            });
+            const byIcon = buttons.find(btn => btn.classList.contains('new-project-button')) ||
+                buttons.find(btn => /^\s*(add_2|add)?\s*(novo projeto|new project)\s*$/i.test(btn.textContent || '')) ||
+                buttons.find(btn => {
+                    const icon = String(btn.querySelector('mat-icon, i')?.textContent || '').trim().toLowerCase();
+                    return icon === 'add_2' && /projeto|project/i.test(btn.textContent || '');
+                });
 
             if (!byIcon) return { success: false, reason: 'new-project-button-not-found' };
 
@@ -1021,6 +627,12 @@ function stopAutomation() {
     }
 }
 
+function buildContentConfig(config, totalItems) {
+    // Everything except the heavy arrays
+    const { prompts, images, ...rest } = config || {};
+    return { ...rest, totalPrompts: totalItems };
+}
+
 async function processNextPrompt() {
     const prompts = automationState.prompts || [];
     const config = automationState.config;
@@ -1072,26 +684,7 @@ async function processNextPrompt() {
             prompt,
             image: currentImage, // Pass image data
             index: automationState.currentIndex,
-            config: {
-                mode: config.mode,
-                imageModel: config.imageModel,
-                videoModel: config.videoModel,
-                doUpscale: config.doUpscale,
-                aspectRatio: config.aspectRatio,
-                imageResolution: config.imageResolution,
-                videoResolution: config.videoResolution,
-                videoDuration: config.videoDuration,
-                generationTimeout: config.generationTimeout,
-                generationTimeout: config.generationTimeout,
-                totalPrompts: totalItems,
-                randomizeAspectRatio: config.randomizeAspectRatio,
-                randomizeAspectRatio: config.randomizeAspectRatio,
-                randomIncludeLandscape43: config.randomIncludeLandscape43,
-                randomIncludeSquare: config.randomIncludeSquare,
-                randomIncludePortrait34: config.randomIncludePortrait34,
-                randomIncludePortrait: config.randomIncludePortrait,
-                randomIncludeLandscape: config.randomIncludeLandscape
-            }
+            config: buildContentConfig(config, totalItems)
         });
     } catch (e) {
         console.log('[BG] Injecting content script...');
@@ -1102,26 +695,7 @@ async function processNextPrompt() {
             prompt,
             image: currentImage, // Pass image data
             index: automationState.currentIndex,
-            config: {
-                mode: config.mode,
-                imageModel: config.imageModel,
-                videoModel: config.videoModel,
-                doUpscale: config.doUpscale,
-                aspectRatio: config.aspectRatio,
-                imageResolution: config.imageResolution,
-                videoResolution: config.videoResolution,
-                videoDuration: config.videoDuration,
-                generationTimeout: config.generationTimeout,
-                generationTimeout: config.generationTimeout,
-                totalPrompts: totalItems,
-                randomizeAspectRatio: config.randomizeAspectRatio,
-                randomizeAspectRatio: config.randomizeAspectRatio,
-                randomIncludeLandscape43: config.randomIncludeLandscape43,
-                randomIncludeSquare: config.randomIncludeSquare,
-                randomIncludePortrait34: config.randomIncludePortrait34,
-                randomIncludePortrait: config.randomIncludePortrait,
-                randomIncludeLandscape: config.randomIncludeLandscape
-            }
+            config: buildContentConfig(config, totalItems)
         });
     }
 }
@@ -1358,11 +932,14 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
 
     // 0. IMPORTANT: If not a Flow URL and not a data URL we expect, LET OTHER EXTENSIONS HANDLE IT
     const isFlowUrl = itemUrl.includes('storage.googleapis.com') ||
+        itemUrl.includes('flow-content.google') ||
         itemUrl.includes('googleusercontent.com') ||
         itemUrl.includes('getMediaUrlRedirect') ||
         itemUrl.includes('googlevideo.com') ||
         itemUrl.includes('blob:https://labs.google') ||
-        downloadItem.referrer?.includes('labs.google');
+        itemUrl.includes('blob:https://flow.google.com') ||
+        downloadItem.referrer?.includes('labs.google') ||
+        downloadItem.referrer?.includes('flow.google.com');
 
     const isOurDataTxt = itemUrl.startsWith('data:text/plain') && automationState.pendingTxtFilename;
 
@@ -1416,6 +993,9 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
 
     if (index !== -1) {
         const match = pendingDownloadQueue.splice(index, 1)[0];
+        const realExt = (String(downloadItem.filename || '').match(/\.([a-z0-9]{2,4})$/i) || [])[1] ||
+            ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif', 'video/mp4': 'mp4' })[downloadItem.mime] || '';
+        if (realExt) match.filename = match.filename.replace(/\.[a-z0-9]{2,4}$/i, '.' + realExt.toLowerCase());
         console.log('[BG] Found match! Renaming to:', match.filename);
         automationState.lastDownloadBasename = match.basename;
         automationState.lastDownloadSubfolder = match.subfolder;
